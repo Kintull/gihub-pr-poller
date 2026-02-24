@@ -23,6 +23,7 @@ from tests.conftest import (
     make_check_run_response,
     make_github_pr_response,
     make_review_response,
+    make_workflow_run_jobs_response,
     make_workflow_run_response,
 )
 
@@ -377,6 +378,41 @@ class TestFetchWorkflowRuns:
         result = await client.fetch_workflow_runs(
             "owner/repo", "test", branch="main", per_page=10
         )
+        assert result == []
+
+
+class TestFetchWorkflowRunJobs:
+    @pytest.fixture
+    def client(self):
+        return GitHubClient(token="test-token")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_success(self, client):
+        jobs_data = make_workflow_run_jobs_response()
+        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/runs/42/jobs").mock(
+            return_value=httpx.Response(200, json=jobs_data)
+        )
+        result = await client.fetch_workflow_run_jobs("owner/repo", 42)
+        assert len(result) == 2
+        assert result[0]["name"] == "build"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_not_a_dict_returns_empty(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/runs/42/jobs").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        result = await client.fetch_workflow_run_jobs("owner/repo", 42)
+        assert result == []
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_empty_jobs_list(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/runs/99/jobs").mock(
+            return_value=httpx.Response(200, json={"jobs": []})
+        )
+        result = await client.fetch_workflow_run_jobs("owner/repo", 99)
         assert result == []
 
 

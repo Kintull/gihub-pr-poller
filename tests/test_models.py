@@ -80,6 +80,16 @@ class TestCIDisplay:
     def test_running_default_index(self):
         assert ci_display(CIStatus.RUNNING) == SPINNER_FRAMES[0]
 
+    def test_running_with_progress(self):
+        assert ci_display(CIStatus.RUNNING, 0, completed=2, total=3) == f"{SPINNER_FRAMES[0]}(2/3)"
+
+    def test_running_with_zero_total_no_progress(self):
+        assert ci_display(CIStatus.RUNNING, 0, completed=0, total=0) == SPINNER_FRAMES[0]
+
+    def test_running_progress_spinner_wraps(self):
+        idx = len(SPINNER_FRAMES) + 1
+        assert ci_display(CIStatus.RUNNING, idx, completed=1, total=5) == f"{SPINNER_FRAMES[1]}(1/5)"
+
 
 class TestCISymbols:
     def test_all_non_running_statuses_have_symbols(self):
@@ -92,10 +102,12 @@ class TestDeployStatus:
     def test_enum_values(self):
         assert DeployStatus.ACC_DEPLOYING.value == "acc_deploying"
         assert DeployStatus.ACC_DEPLOYED.value == "acc_deployed"
+        assert DeployStatus.ACC_ARGO.value == "acc_argo"
         assert DeployStatus.NONE.value == "none"
 
     def test_from_value(self):
         assert DeployStatus("acc_deploying") == DeployStatus.ACC_DEPLOYING
+        assert DeployStatus("acc_argo") == DeployStatus.ACC_ARGO
         assert DeployStatus("none") == DeployStatus.NONE
 
 
@@ -116,11 +128,27 @@ class TestAccDeployDisplay:
     def test_deploying_default_index(self):
         assert acc_deploy_display(DeployStatus.ACC_DEPLOYING) == SPINNER_FRAMES[0]
 
+    def test_deploying_with_progress(self):
+        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, 0, completed=3, total=5) == f"{SPINNER_FRAMES[0]}(3/5)"
+
+    def test_deploying_zero_total_no_progress(self):
+        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, 0, completed=0, total=0) == SPINNER_FRAMES[0]
+
+    def test_acc_argo_shows_spinner_and_argo(self):
+        assert acc_deploy_display(DeployStatus.ACC_ARGO, 0) == f"{SPINNER_FRAMES[0]}ARGO"
+
+    def test_acc_argo_spinner_wraps(self):
+        idx = len(SPINNER_FRAMES) + 2
+        assert acc_deploy_display(DeployStatus.ACC_ARGO, idx) == f"{SPINNER_FRAMES[2]}ARGO"
+
+    def test_acc_argo_ignores_completed_total(self):
+        assert acc_deploy_display(DeployStatus.ACC_ARGO, 0, completed=5, total=10) == f"{SPINNER_FRAMES[0]}ARGO"
+
 
 class TestAccDeploySymbols:
     def test_all_non_deploying_statuses_have_symbols(self):
         for status in DeployStatus:
-            if status != DeployStatus.ACC_DEPLOYING:
+            if status not in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO):
                 assert status in ACC_DEPLOY_SYMBOLS
 
 

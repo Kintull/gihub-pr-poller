@@ -17,6 +17,7 @@ from github_tracker.github_client import GitHubClient, _aggregate_ci_status, cou
 from github_tracker.models import CIStatus, DeployStatus, PullRequest
 from github_tracker.pr_service import (
     compute_acc_deploy,
+    compute_ci_progress,
     compute_phase1_labels,
     compute_phase2_labels,
     filter_expired_merged_prs,
@@ -239,8 +240,25 @@ class GitHubTrackerApp(App):
         # Compute ACC deploy status for each merged PR
         for i, mpr in enumerate(self._merged_prs):
             runs = workflow_runs_by_repo.get(mpr.repo, [])
-            new_status = compute_acc_deploy(mpr, runs, self.config.acc_cooldown_minutes)
-            self._merged_prs[i] = replace(mpr, acc_deploy=new_status)
+            # Fetch jobs for in-progress/queued runs
+            jobs_by_run_id: dict[int, list[dict]] = {}
+            for run in runs:
+                run_id = run.get("id")
+                if run_id and run.get("status") in ("queued", "in_progress"):
+                    try:
+                        jobs = await self.github_client.fetch_workflow_run_jobs(mpr.repo, run_id)
+                        jobs_by_run_id[run_id] = jobs
+                    except Exception as e:
+                        logger.error("Error fetching jobs for run %d: %s", run_id, e)
+            new_status, acc_completed, acc_total = compute_acc_deploy(
+                mpr, runs, self.config.acc_cooldown_minutes, jobs_by_run_id
+            )
+            self._merged_prs[i] = replace(
+                mpr,
+                acc_deploy=new_status,
+                acc_completed_steps=acc_completed,
+                acc_total_steps=acc_total,
+            )
 
         # Filter expired merged PRs
         self._merged_prs = filter_expired_merged_prs(
@@ -276,6 +294,7 @@ class GitHubTrackerApp(App):
 
             approval_count = count_approvals(reviews)
             ci_status = _aggregate_ci_status(check_runs)
+            ci_completed, ci_total = compute_ci_progress(check_runs)
             comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
 
             # Find the PR in whichever table contains it
@@ -290,6 +309,8 @@ class GitHubTrackerApp(App):
                 pr,
                 approval_count=approval_count,
                 ci_status=ci_status,
+                ci_completed_steps=ci_completed,
+                ci_total_steps=ci_total,
                 comment_count=comment_count,
                 labels=new_labels,
             )

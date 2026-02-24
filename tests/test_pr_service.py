@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from github_tracker.models import DeployStatus, PRLabel
 from github_tracker.pr_service import (
     compute_acc_deploy,
+    compute_ci_progress,
     compute_phase1_labels,
     compute_phase2_labels,
     filter_expired_merged_prs,
@@ -188,14 +189,41 @@ class TestGroupPrs:
         assert [p.number for p in other] == [3, 4]
 
 
+class TestComputeCiProgress:
+    def test_empty_returns_zero(self):
+        assert compute_ci_progress([]) == (0, 0)
+
+    def test_all_completed(self):
+        runs = [
+            {"status": "completed", "conclusion": "success"},
+            {"status": "completed", "conclusion": "failure"},
+        ]
+        assert compute_ci_progress(runs) == (2, 2)
+
+    def test_mixed_statuses(self):
+        runs = [
+            {"status": "completed", "conclusion": "success"},
+            {"status": "in_progress", "conclusion": None},
+            {"status": "queued", "conclusion": None},
+        ]
+        assert compute_ci_progress(runs) == (1, 3)
+
+    def test_none_completed(self):
+        runs = [
+            {"status": "in_progress", "conclusion": None},
+            {"status": "queued", "conclusion": None},
+        ]
+        assert compute_ci_progress(runs) == (0, 2)
+
+
 class TestComputeAccDeploy:
     def test_no_merged_at_returns_none(self):
         pr = make_pr(merged_at=None)
-        assert compute_acc_deploy(pr, [], 20) == DeployStatus.NONE
+        assert compute_acc_deploy(pr, [], 20) == (DeployStatus.NONE, 0, 0)
 
     def test_no_runs_returns_deploying(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        assert compute_acc_deploy(pr, [], 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_acc_deploy(pr, [], 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
 
     def test_run_in_progress_returns_deploying(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
@@ -204,7 +232,10 @@ class TestComputeAccDeploy:
             conclusion=None,
             created_at="2024-06-15T12:30:00Z",
         )]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        status, completed, total = compute_acc_deploy(pr, runs, 20)
+        assert status == DeployStatus.ACC_DEPLOYING
+        assert completed == 0
+        assert total == 0
 
     def test_run_queued_returns_deploying(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
@@ -213,9 +244,10 @@ class TestComputeAccDeploy:
             conclusion=None,
             created_at="2024-06-15T12:30:00Z",
         )]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        status, completed, total = compute_acc_deploy(pr, runs, 20)
+        assert status == DeployStatus.ACC_DEPLOYING
 
-    def test_completed_success_within_cooldown_returns_deploying(self):
+    def test_completed_success_within_cooldown_returns_acc_argo(self):
         now = datetime.now(tz=timezone.utc)
         pr = make_pr(merged_at=now - timedelta(hours=1))
         runs = [make_workflow_run_response(
@@ -224,7 +256,7 @@ class TestComputeAccDeploy:
             created_at=(now - timedelta(minutes=30)).isoformat(),
             updated_at=(now - timedelta(minutes=5)).isoformat(),  # within 20min cooldown
         )]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_ARGO, 0, 0)
 
     def test_completed_success_past_cooldown_returns_deployed(self):
         now = datetime.now(tz=timezone.utc)
@@ -235,7 +267,7 @@ class TestComputeAccDeploy:
             created_at=(now - timedelta(hours=1, minutes=30)).isoformat(),
             updated_at=(now - timedelta(hours=1)).isoformat(),  # well past 20min cooldown
         )]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYED
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYED, 0, 0)
 
     def test_completed_failure_returns_deploying(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
@@ -244,7 +276,7 @@ class TestComputeAccDeploy:
             conclusion="failure",
             created_at="2024-06-15T12:30:00Z",
         )]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
 
     def test_run_before_merge_ignored(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 14, 0, 0, tzinfo=timezone.utc))
@@ -255,12 +287,12 @@ class TestComputeAccDeploy:
             updated_at="2024-06-15T10:10:00Z",
         )]
         # No relevant runs → deploying
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
 
     def test_invalid_created_at_skipped(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
         runs = [{"status": "completed", "conclusion": "success", "created_at": "bad-date", "updated_at": "bad"}]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
 
     def test_success_with_invalid_updated_at_returns_deploying(self):
         now = datetime.now(tz=timezone.utc)
@@ -271,7 +303,7 @@ class TestComputeAccDeploy:
             "created_at": (now - timedelta(minutes=30)).isoformat(),
             "updated_at": "bad-date",
         }]
-        assert compute_acc_deploy(pr, runs, 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
 
     def test_zero_cooldown_deployed_immediately(self):
         now = datetime.now(tz=timezone.utc)
@@ -282,7 +314,56 @@ class TestComputeAccDeploy:
             created_at=(now - timedelta(minutes=30)).isoformat(),
             updated_at=(now - timedelta(minutes=5)).isoformat(),
         )]
-        assert compute_acc_deploy(pr, runs, 0) == DeployStatus.ACC_DEPLOYED
+        assert compute_acc_deploy(pr, runs, 0) == (DeployStatus.ACC_DEPLOYED, 0, 0)
+
+    def test_in_progress_with_jobs_returns_step_counts(self):
+        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+        run_id = 99
+        runs = [make_workflow_run_response(
+            status="in_progress",
+            conclusion=None,
+            created_at="2024-06-15T12:30:00Z",
+            id=run_id,
+        )]
+        jobs_by_run_id = {
+            run_id: [
+                {"status": "completed", "name": "build"},
+                {"status": "completed", "name": "lint"},
+                {"status": "in_progress", "name": "test"},
+            ]
+        }
+        status, completed, total = compute_acc_deploy(pr, runs, 20, jobs_by_run_id)
+        assert status == DeployStatus.ACC_DEPLOYING
+        assert completed == 2
+        assert total == 3
+
+    def test_in_progress_run_id_not_in_jobs_returns_zero_counts(self):
+        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+        runs = [make_workflow_run_response(
+            status="in_progress",
+            conclusion=None,
+            created_at="2024-06-15T12:30:00Z",
+            id=42,
+        )]
+        jobs_by_run_id = {}  # empty
+        status, completed, total = compute_acc_deploy(pr, runs, 20, jobs_by_run_id)
+        assert status == DeployStatus.ACC_DEPLOYING
+        assert completed == 0
+        assert total == 0
+
+    def test_run_without_id_field_returns_zero_counts(self):
+        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
+        runs = [{
+            "status": "in_progress",
+            "conclusion": None,
+            "created_at": "2024-06-15T12:30:00Z",
+            # no "id" key
+        }]
+        jobs_by_run_id = {42: [{"status": "completed"}]}
+        status, completed, total = compute_acc_deploy(pr, runs, 20, jobs_by_run_id)
+        assert status == DeployStatus.ACC_DEPLOYING
+        assert completed == 0
+        assert total == 0
 
 
 class TestFilterExpiredMergedPrs:

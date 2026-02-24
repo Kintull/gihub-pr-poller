@@ -16,7 +16,7 @@ from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
 from github_tracker.widgets.header import TrackerHeader
 from github_tracker.widgets.pr_table import PRTable
 from github_tracker.widgets.status_bar import StatusBar
-from tests.conftest import make_pr, make_github_pr_response, make_review_response, make_check_run_response
+from tests.conftest import make_pr, make_github_pr_response, make_review_response, make_check_run_response, make_workflow_run_response
 
 
 def make_mock_client(prs: list[PullRequest] | None = None, raw_prs: list[dict] | None = None) -> GitHubClient:
@@ -29,6 +29,7 @@ def make_mock_client(prs: list[PullRequest] | None = None, raw_prs: list[dict] |
     client.fetch_check_runs = AsyncMock(return_value=[])
     client.fetch_pr_detail = AsyncMock(return_value={"comments": 0, "review_comments": 0})
     client.fetch_workflow_runs = AsyncMock(return_value=[])
+    client.fetch_workflow_run_jobs = AsyncMock(return_value=[])
     return client
 
 
@@ -566,6 +567,128 @@ class TestMergeDetection:
                     assert app._merged_prs[0].number == 5
 
     @pytest.mark.asyncio
+    async def test_fetch_workflow_run_jobs_called_for_in_progress_run(self):
+        """fetch_workflow_run_jobs is called for in-progress workflow runs."""
+        from datetime import datetime, timezone as tz
+        merged_at = datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz.utc)
+        merged = [make_pr(
+            number=1,
+            repo="owner/repo",
+            merged_at=merged_at,
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="in_progress",
+            conclusion=None,
+            created_at="2024-06-15T13:00:00Z",
+            id=42,
+        )
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        client.fetch_workflow_run_jobs = AsyncMock(return_value=[])
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    client.fetch_workflow_run_jobs.assert_called_once_with("owner/repo", 42)
+
+    @pytest.mark.asyncio
+    async def test_fetch_workflow_run_jobs_not_called_for_completed_run(self):
+        """fetch_workflow_run_jobs is NOT called for completed workflow runs."""
+        from datetime import datetime, timezone as tz
+        merged_at = datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz.utc)
+        merged = [make_pr(
+            number=1,
+            repo="owner/repo",
+            merged_at=merged_at,
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="completed",
+            conclusion="success",
+            created_at="2024-06-15T13:00:00Z",
+            id=42,
+        )
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        client.fetch_workflow_run_jobs = AsyncMock(return_value=[])
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    client.fetch_workflow_run_jobs.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fetch_workflow_run_jobs_error_handled(self):
+        """Error fetching workflow run jobs doesn't crash the app."""
+        from datetime import datetime, timezone as tz
+        merged_at = datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz.utc)
+        merged = [make_pr(
+            number=1,
+            repo="owner/repo",
+            merged_at=merged_at,
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="in_progress",
+            conclusion=None,
+            created_at="2024-06-15T13:00:00Z",
+            id=42,
+        )
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        client.fetch_workflow_run_jobs = AsyncMock(side_effect=Exception("Network error"))
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert len(app._merged_prs) == 1
+
+    @pytest.mark.asyncio
+    async def test_acc_step_counts_propagated(self):
+        """Step counts from jobs are stored on merged PR."""
+        from datetime import datetime, timezone as tz
+        merged_at = datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz.utc)
+        merged = [make_pr(
+            number=1,
+            repo="owner/repo",
+            merged_at=merged_at,
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="in_progress",
+            conclusion=None,
+            created_at="2024-06-15T13:00:00Z",
+            id=77,
+        )
+        jobs = [
+            {"status": "completed", "name": "build"},
+            {"status": "in_progress", "name": "test"},
+            {"status": "queued", "name": "deploy"},
+        ]
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        client.fetch_workflow_run_jobs = AsyncMock(return_value=jobs)
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert app._merged_prs[0].acc_completed_steps == 1
+                    assert app._merged_prs[0].acc_total_steps == 3
+
+    @pytest.mark.asyncio
     async def test_closed_not_merged_pr_not_tracked(self):
         """PR that disappeared but wasn't merged (closed) is not tracked."""
         cached = [make_pr(number=1, repo="owner/repo")]
@@ -582,6 +705,27 @@ class TestMergeDetection:
                     await pilot.app.workers.wait_for_complete()
                     await pilot.pause()
                     assert len(app._merged_prs) == 0
+
+
+class TestCIProgressPropagation:
+    @pytest.mark.asyncio
+    async def test_ci_step_counts_set_in_phase2(self):
+        """CI step counts are computed and stored on PR after Phase 2."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_check_runs = AsyncMock(return_value=[
+            {"status": "completed", "conclusion": "success", "name": "build"},
+            {"status": "in_progress", "conclusion": None, "name": "test"},
+        ])
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            table = _get_other_table(pilot.app)
+            pr = table.pull_requests[0]
+            assert pr.ci_completed_steps == 1
+            assert pr.ci_total_steps == 2
 
 
 class TestMain:

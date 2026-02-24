@@ -37,6 +37,7 @@ class DeployStatus(Enum):
 
     ACC_DEPLOYING = "acc_deploying"
     ACC_DEPLOYED = "acc_deployed"
+    ACC_ARGO = "acc_argo"
     NONE = "none"
 
 
@@ -59,10 +60,13 @@ CI_SYMBOLS = {
 }
 
 
-def ci_display(status: CIStatus, spinner_index: int = 0) -> str:
+def ci_display(status: CIStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str:
     """Return display string for a CI status."""
     if status == CIStatus.RUNNING:
-        return SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
+        frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
+        if total > 0:
+            return f"{frame}({completed}/{total})"
+        return frame
     return CI_SYMBOLS[status]
 
 
@@ -72,10 +76,15 @@ ACC_DEPLOY_SYMBOLS = {
 }
 
 
-def acc_deploy_display(status: DeployStatus, spinner_index: int = 0) -> str:
+def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str:
     """Return display string for a deploy status."""
     if status == DeployStatus.ACC_DEPLOYING:
-        return SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
+        frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
+        if total > 0:
+            return f"{frame}({completed}/{total})"
+        return frame
+    if status == DeployStatus.ACC_ARGO:
+        return f"{SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]}ARGO"
     return ACC_DEPLOY_SYMBOLS[status]
 
 
@@ -98,3 +107,7 @@ class PullRequest:
     labels: frozenset[PRLabel] = field(default_factory=frozenset)
     acc_deploy: DeployStatus = field(default=DeployStatus.NONE)
     merged_at: datetime | None = field(default=None)
+    ci_completed_steps: int = field(default=0)
+    ci_total_steps: int = field(default=0)
+    acc_completed_steps: int = field(default=0)
+    acc_total_steps: int = field(default=0)

@@ -158,6 +158,15 @@ class GitHubClient:
         logger.debug("Found %d workflow runs for %s/%r", len(runs), repo, workflow_name)
         return runs
 
+    async def fetch_workflow_run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        """Fetch jobs for a specific workflow run."""
+        logger.debug("Fetching jobs for %s run %d", repo, run_id)
+        data = await self._get(f"/repos/{repo}/actions/runs/{run_id}/jobs")
+        if not isinstance(data, dict):
+            logger.warning("Jobs response not a dict for %s run %d", repo, run_id)
+            return []
+        return data.get("jobs", [])
+
     async def fetch_pr_detail(self, repo: str, pr_number: int) -> dict:
         """Fetch full detail for a single pull request."""
         logger.debug("Fetching PR detail for %s#%d", repo, pr_number)

@@ -276,3 +276,51 @@ class TestPRTable:
             initial_index = table._spinner_index
             table.advance_spinner()
             assert table._spinner_index == initial_index + 1
+
+    @pytest.mark.asyncio
+    async def test_ci_cell_shows_progress(self):
+        """CI cell shows spinner with progress when ci_total_steps > 0."""
+        from github_tracker.models import SPINNER_FRAMES
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(
+                number=1,
+                ci_status=CIStatus.RUNNING,
+                ci_completed_steps=2,
+                ci_total_steps=3,
+            )
+            table._spinner_index = 0
+            values = table._row_values(pr)
+            assert values[5] == f"{SPINNER_FRAMES[0]}(2/3)"
+
+    @pytest.mark.asyncio
+    async def test_acc_cell_shows_argo(self):
+        """ACC cell shows spinner+ARGO for ACC_ARGO status."""
+        from datetime import datetime, timezone
+        from github_tracker.models import SPINNER_FRAMES
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(
+                number=1,
+                merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+                acc_deploy=DeployStatus.ACC_ARGO,
+            )
+            table._spinner_index = 0
+            values = table._row_values(pr)
+            assert values[6] == f"{SPINNER_FRAMES[0]}ARGO"
+
+    @pytest.mark.asyncio
+    async def test_advance_spinner_animates_acc_argo(self):
+        """advance_spinner also updates ACC cell for ACC_ARGO status."""
+        from datetime import datetime, timezone
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            prs = [make_pr(
+                number=1,
+                merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+                acc_deploy=DeployStatus.ACC_ARGO,
+            )]
+            table.load_prs(prs)
+            initial_index = table._spinner_index
+            table.advance_spinner()
+            assert table._spinner_index == initial_index + 1

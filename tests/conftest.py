@@ -27,6 +27,10 @@ def make_pr(**overrides) -> PullRequest:
         "labels": frozenset(),
         "acc_deploy": DeployStatus.NONE,
         "merged_at": None,
+        "ci_completed_steps": 0,
+        "ci_total_steps": 0,
+        "acc_completed_steps": 0,
+        "acc_total_steps": 0,
     }
     defaults.update(overrides)
     return PullRequest(**defaults)
@@ -67,14 +71,26 @@ def make_workflow_run_response(
     conclusion: str | None = "success",
     created_at: str = "2024-06-15T13:00:00Z",
     updated_at: str = "2024-06-15T13:10:00Z",
+    id: int = 12345,
 ) -> dict:
     """Factory for creating GitHub workflow run response dicts."""
     return {
+        "id": id,
         "status": status,
         "conclusion": conclusion,
         "created_at": created_at,
         "updated_at": updated_at,
     }
+
+
+def make_workflow_run_jobs_response(jobs: list[dict] | None = None) -> dict:
+    """Factory for creating GitHub workflow run jobs response dicts."""
+    if jobs is None:
+        jobs = [
+            {"status": "completed", "name": "build"},
+            {"status": "in_progress", "name": "test"},
+        ]
+    return {"jobs": jobs}
 
 
 @pytest.fixture
