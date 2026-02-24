@@ -278,6 +278,48 @@ class TestComputeAccDeploy:
         )]
         assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
 
+    def test_completed_skipped_is_ignored_keeps_looking(self):
+        """completed/skipped runs (all jobs skipped due to unmet conditions) are ignored,
+        not treated as a failed deploy attempt."""
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(merged_at=now - timedelta(hours=1))
+        # Two skipped runs after merge, then nothing relevant → still deploying
+        runs = [
+            make_workflow_run_response(
+                status="completed",
+                conclusion="skipped",
+                created_at=(now - timedelta(minutes=50)).isoformat(),
+                updated_at=(now - timedelta(minutes=50)).isoformat(),
+            ),
+            make_workflow_run_response(
+                status="completed",
+                conclusion="skipped",
+                created_at=(now - timedelta(minutes=40)).isoformat(),
+                updated_at=(now - timedelta(minutes=40)).isoformat(),
+            ),
+        ]
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
+
+    def test_completed_skipped_then_success_past_cooldown(self):
+        """Skipped runs are ignored; a subsequent successful run past cooldown → deployed."""
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(merged_at=now - timedelta(hours=2))
+        runs = [
+            make_workflow_run_response(
+                status="completed",
+                conclusion="skipped",
+                created_at=(now - timedelta(hours=1, minutes=50)).isoformat(),
+                updated_at=(now - timedelta(hours=1, minutes=50)).isoformat(),
+            ),
+            make_workflow_run_response(
+                status="completed",
+                conclusion="success",
+                created_at=(now - timedelta(hours=1, minutes=30)).isoformat(),
+                updated_at=(now - timedelta(hours=1)).isoformat(),
+            ),
+        ]
+        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYED, 0, 0)
+
     def test_run_before_merge_ignored(self):
         pr = make_pr(merged_at=datetime(2024, 6, 15, 14, 0, 0, tzinfo=timezone.utc))
         runs = [make_workflow_run_response(

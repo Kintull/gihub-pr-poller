@@ -131,7 +131,12 @@ def compute_acc_deploy(
                 return DeployStatus.ACC_DEPLOYED, 0, 0
             return DeployStatus.ACC_ARGO, 0, 0
 
-        # completed + non-success (failure/skipped): waiting for retry
+        # completed + skipped: workflow triggered but all jobs were conditionally skipped
+        # (e.g. waiting for image build to finish). Not a real deploy attempt — keep looking.
+        if status == "completed" and conclusion == "skipped":
+            continue
+
+        # completed + other non-success (failure, cancelled, etc.): waiting for retry
         if status == "completed":
             return DeployStatus.ACC_DEPLOYING, 0, 0
 
