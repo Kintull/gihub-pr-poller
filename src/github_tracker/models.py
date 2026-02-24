@@ -66,7 +66,7 @@ def ci_display(status: CIStatus, spinner_index: int = 0, completed: int = 0, tot
         frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
         if total > 0:
             return f"{frame}({completed}/{total})"
-        return frame
+        return f"{frame}({frame}/{frame})"
     return CI_SYMBOLS[status]
 
 
@@ -82,7 +82,7 @@ def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: 
         frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
         if total > 0:
             return f"{frame}({completed}/{total})"
-        return frame
+        return f"{frame}({frame}/{frame})"
     if status == DeployStatus.ACC_ARGO:
         return f"{SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]}ARGO"
     return ACC_DEPLOY_SYMBOLS[status]
