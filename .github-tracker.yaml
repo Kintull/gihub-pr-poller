@@ -1,0 +1,5 @@
+ jira_base_url: https://internal.jira.mobiliteitsfabriek.nl/browse
+ github_repos:
+   - Mobiliteitsfabriek/reisbalans-core
+ refresh_interval: 300
+ github_username: Kintull
