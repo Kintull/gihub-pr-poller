@@ -411,6 +411,98 @@ class GitHubTrackerApp(App):
             except Exception:
                 pass
 
+    async def _refresh_focused_prs(self) -> None:
+        """Refresh only the PRs in the currently focused table."""
+        table = self._get_focused_table()
+        if table is None:
+            return
+
+        header = self.query_one(TrackerHeader)
+        prs = list(table.pull_requests)
+        open_prs = [pr for pr in prs if pr.merged_at is None]
+        merged_prs_in_table = [pr for pr in prs if pr.merged_at is not None]
+
+        header.status_text = f"Refreshing {len(prs)} PRs..."
+        logger.info(
+            "Refreshing focused table: %d open, %d merged",
+            len(open_prs), len(merged_prs_in_table),
+        )
+
+        for i, pr in enumerate(open_prs):
+            try:
+                pr_detail = await self.github_client.fetch_pr_detail(pr.repo, pr.number)
+                head_sha = (pr_detail.get("head") or {}).get("sha", "")
+                if not head_sha:
+                    continue
+                reviews, check_runs = await asyncio.gather(
+                    self.github_client.fetch_reviews(pr.repo, pr.number),
+                    self.github_client.fetch_check_runs(pr.repo, head_sha),
+                )
+            except Exception as e:
+                logger.error("Error refreshing PR #%d: %s", pr.number, e)
+                continue
+
+            approval_count = count_approvals(reviews)
+            ci_status = _aggregate_ci_status(check_runs)
+            ci_completed, ci_total = compute_ci_progress(check_runs)
+            comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
+            new_labels = compute_phase2_labels(pr.labels, reviews, self.config.github_username)
+            updated_pr = replace(
+                pr,
+                approval_count=approval_count,
+                ci_status=ci_status,
+                ci_completed_steps=ci_completed,
+                ci_total_steps=ci_total,
+                comment_count=comment_count,
+                labels=new_labels,
+            )
+            self._update_pr_in_tables(updated_pr)
+            header.status_text = f"Refreshing {len(prs)} PRs — {i + 1}/{len(open_prs)}"
+
+        if merged_prs_in_table:
+            repos_with_merged = {pr.repo for pr in merged_prs_in_table}
+            workflow_runs_by_repo: dict[str, list[dict]] = {}
+            for repo in repos_with_merged:
+                try:
+                    runs = await self.github_client.fetch_workflow_runs(
+                        repo, self.config.acc_workflow_name
+                    )
+                    workflow_runs_by_repo[repo] = runs
+                except Exception as e:
+                    logger.error("Error fetching workflow runs for %s: %s", repo, e)
+                    workflow_runs_by_repo[repo] = []
+
+            for mpr in merged_prs_in_table:
+                runs = workflow_runs_by_repo.get(mpr.repo, [])
+                jobs_by_run_id: dict[int, list[dict]] = {}
+                for run in runs:
+                    run_id = run.get("id")
+                    if run_id and run.get("status") in ("queued", "in_progress"):
+                        try:
+                            jobs = await self.github_client.fetch_workflow_run_jobs(
+                                mpr.repo, run_id
+                            )
+                            jobs_by_run_id[run_id] = jobs
+                        except Exception as e:
+                            logger.error("Error fetching jobs for run %d: %s", run_id, e)
+                new_status, acc_completed, acc_total = compute_acc_deploy(
+                    mpr, runs, self.config.acc_cooldown_minutes, jobs_by_run_id
+                )
+                updated_mpr = replace(
+                    mpr,
+                    acc_deploy=new_status,
+                    acc_completed_steps=acc_completed,
+                    acc_total_steps=acc_total,
+                )
+                self._update_pr_in_tables(updated_mpr)
+                for j, m in enumerate(self._merged_prs):
+                    if m.number == mpr.number and m.repo == mpr.repo:
+                        self._merged_prs[j] = updated_mpr
+                        break
+
+        header.status_text = f"{len(prs)} PRs"
+        logger.info("Finished refreshing focused table")
+
     async def _auto_refresh(self) -> None:
         """Auto-refresh triggered by timer."""
         if self.github_client:
@@ -419,7 +511,7 @@ class GitHubTrackerApp(App):
     async def action_refresh(self) -> None:
         """Handle refresh key binding."""
         if self.github_client:
-            self.run_worker(self._load_prs_progressive(), exclusive=True)
+            self.run_worker(self._refresh_focused_prs(), exclusive=True)
         else:
             self.notify("No GitHub client configured", severity="warning")
 

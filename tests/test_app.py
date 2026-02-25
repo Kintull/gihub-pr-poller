@@ -27,7 +27,7 @@ def make_mock_client(prs: list[PullRequest] | None = None, raw_prs: list[dict] |
     client.parse_pr_basic = MagicMock(side_effect=lambda raw, repo, jira: _make_pr_from_raw(raw, repo))
     client.fetch_reviews = AsyncMock(return_value=[])
     client.fetch_check_runs = AsyncMock(return_value=[])
-    client.fetch_pr_detail = AsyncMock(return_value={"comments": 0, "review_comments": 0})
+    client.fetch_pr_detail = AsyncMock(return_value={"head": {"sha": "abc123"}, "comments": 0, "review_comments": 0})
     client.fetch_workflow_runs = AsyncMock(return_value=[])
     client.fetch_workflow_run_jobs = AsyncMock(return_value=[])
     return client
@@ -138,23 +138,24 @@ class TestGitHubTrackerApp:
             assert _get_total_row_count(pilot.app) == 0
 
     @pytest.mark.asyncio
-    async def test_refresh_keybinding(self):
+    async def test_refresh_keybinding_updates_ci_in_focused_table(self):
+        """Pressing r refreshes CI status of PRs in the focused table."""
         raw = [make_github_pr_response(number=1)]
         client = make_mock_client(raw_prs=raw)
+        client.fetch_check_runs = AsyncMock(return_value=[make_check_run_response("in_progress", None)])
         app = GitHubTrackerApp(config=make_config(), github_client=client)
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.app.workers.wait_for_complete()
             await pilot.pause()
-            # Add a second PR on refresh
-            raw2 = [make_github_pr_response(number=1), make_github_pr_response(number=2)]
-            client.fetch_open_prs.return_value = raw2
+            # On refresh, CI becomes SUCCESS
+            client.fetch_check_runs.return_value = [make_check_run_response("completed", "success")]
             await pilot.press("r")
             await pilot.pause()
             await pilot.app.workers.wait_for_complete()
             await pilot.pause()
             table = _get_other_table(pilot.app)
-            assert table.row_count == 2
+            assert table.pull_requests[0].ci_status == CIStatus.SUCCESS
 
     @pytest.mark.asyncio
     async def test_refresh_no_client(self):
@@ -705,6 +706,216 @@ class TestMergeDetection:
                     await pilot.app.workers.wait_for_complete()
                     await pilot.pause()
                     assert len(app._merged_prs) == 0
+
+
+class TestRefreshFocusedPrs:
+    @pytest.mark.asyncio
+    async def test_no_table_focused_does_nothing(self):
+        """When _get_focused_table() returns None, _refresh_focused_prs returns early."""
+        client = make_mock_client(raw_prs=[])
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            with patch.object(pilot.app, "_get_focused_table", return_value=None):
+                await pilot.app._refresh_focused_prs()
+            assert _get_total_row_count(pilot.app) == 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_updates_approval_count(self):
+        """Focused refresh updates approval count from new reviews."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(return_value=[make_review_response("APPROVED", "alice")])
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            client.fetch_reviews.return_value = [
+                make_review_response("APPROVED", "alice"),
+                make_review_response("APPROVED", "bob"),
+            ]
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            table = _get_other_table(pilot.app)
+            assert table.pull_requests[0].approval_count == 2
+
+    @pytest.mark.asyncio
+    async def test_refresh_skips_pr_when_detail_raises(self):
+        """Error fetching pr_detail is logged and that PR is skipped."""
+        raw = [make_github_pr_response(number=1), make_github_pr_response(number=2)]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_pr_detail = AsyncMock(
+            side_effect=[Exception("timeout"), {"head": {"sha": "abc"}, "comments": 0, "review_comments": 0}]
+        )
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            # App still shows both PRs despite one fetch failing
+            assert _get_total_row_count(pilot.app) == 2
+
+    @pytest.mark.asyncio
+    async def test_refresh_skips_pr_when_no_head_sha(self):
+        """PR is skipped when pr_detail returns no head sha."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        # Phase 2 (full load) uses head sha from raw_pr, but focused refresh fetches pr_detail
+        # Return a detail with no head sha → skip this PR
+        client.fetch_pr_detail = AsyncMock(return_value={"comments": 0, "review_comments": 0})
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert _get_total_row_count(pilot.app) == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_updates_merged_pr_acc_status(self):
+        """Focused refresh transitions a merged PR from ACC_DEPLOYING to ACC_DEPLOYED."""
+        from datetime import datetime, timedelta, timezone as tz
+        now = datetime.now(tz=tz.utc)
+        merged_at = now - timedelta(hours=1)
+        merged = [make_pr(
+            number=5,
+            repo="owner/repo",
+            merged_at=merged_at,
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run_in_progress = make_workflow_run_response(
+            status="in_progress", conclusion=None,
+            created_at=(now - timedelta(minutes=30)).isoformat(), id=55,
+        )
+        run_success = make_workflow_run_response(
+            status="completed", conclusion="success",
+            created_at=(now - timedelta(minutes=30)).isoformat(),
+            updated_at=(now - timedelta(hours=2)).isoformat(),  # past cooldown
+            id=55,
+        )
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run_in_progress])
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    # Now workflow run has completed successfully
+                    client.fetch_workflow_runs.return_value = [run_success]
+                    await pilot.press("r")
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert app._merged_prs[0].acc_deploy == DeployStatus.ACC_DEPLOYED
+
+    @pytest.mark.asyncio
+    async def test_refresh_merged_pr_workflow_runs_error_handled(self):
+        """Error fetching workflow runs for merged PR doesn't crash."""
+        from datetime import datetime, timedelta, timezone as tz
+        now = datetime.now(tz=tz.utc)
+        merged = [make_pr(
+            number=5,
+            repo="owner/repo",
+            merged_at=now - timedelta(hours=1),
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="in_progress", conclusion=None,
+            created_at=(now - timedelta(minutes=30)).isoformat(), id=55,
+        )
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    client.fetch_workflow_runs.side_effect = Exception("Network error")
+                    await pilot.press("r")
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert len(app._merged_prs) == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_merged_pr_jobs_error_handled(self):
+        """Error fetching jobs for in-progress run doesn't crash."""
+        from datetime import datetime, timedelta, timezone as tz
+        now = datetime.now(tz=tz.utc)
+        merged = [make_pr(
+            number=5,
+            repo="owner/repo",
+            merged_at=now - timedelta(hours=1),
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="in_progress", conclusion=None,
+            created_at=(now - timedelta(minutes=30)).isoformat(), id=77,
+        )
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        client.fetch_workflow_run_jobs = AsyncMock(side_effect=Exception("timeout"))
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    await pilot.press("r")
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert len(app._merged_prs) == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_merged_pr_syncs_merged_prs_list(self):
+        """Focused refresh keeps _merged_prs in sync with updated step counts."""
+        from datetime import datetime, timedelta, timezone as tz
+        now = datetime.now(tz=tz.utc)
+        merged = [make_pr(
+            number=5,
+            repo="owner/repo",
+            merged_at=now - timedelta(hours=1),
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        run = make_workflow_run_response(
+            status="in_progress", conclusion=None,
+            created_at=(now - timedelta(minutes=30)).isoformat(), id=99,
+        )
+        jobs = [
+            {"status": "completed", "name": "build"},
+            {"status": "in_progress", "name": "test"},
+        ]
+        client = make_mock_client(raw_prs=[])
+        client.fetch_workflow_runs = AsyncMock(return_value=[run])
+        client.fetch_workflow_run_jobs = AsyncMock(return_value=jobs)
+        with patch("github_tracker.app.load_state", return_value=([], merged)):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    await pilot.press("r")
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert app._merged_prs[0].acc_completed_steps == 1
+                    assert app._merged_prs[0].acc_total_steps == 2
 
 
 class TestCIProgressPropagation:
