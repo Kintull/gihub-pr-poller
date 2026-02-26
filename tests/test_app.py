@@ -30,6 +30,7 @@ def make_mock_client(prs: list[PullRequest] | None = None, raw_prs: list[dict] |
     client.fetch_pr_detail = AsyncMock(return_value={"head": {"sha": "abc123"}, "comments": 0, "review_comments": 0})
     client.fetch_workflow_runs = AsyncMock(return_value=[])
     client.fetch_workflow_run_jobs = AsyncMock(return_value=[])
+    client.fetch_review_threads = AsyncMock(return_value=[])
     return client
 
 
@@ -1194,6 +1195,179 @@ class TestFavourite:
                 pilot.app.action_favourite()
                 mock_notify.assert_called_once()
 
+
+class TestFormatStaleness:
+    def test_none_returns_empty(self):
+        assert GitHubTrackerApp._format_staleness(None) == ""
+
+    def test_under_10s(self):
+        t = datetime.now(timezone.utc)
+        result = GitHubTrackerApp._format_staleness(t)
+        assert result == "<10s ago"
+
+    def test_10s_bucket(self):
+        t = datetime.now(timezone.utc) - __import__("datetime").timedelta(seconds=10)
+        result = GitHubTrackerApp._format_staleness(t)
+        assert result == "<20s ago"
+
+    def test_40s_bucket(self):
+        t = datetime.now(timezone.utc) - __import__("datetime").timedelta(seconds=40)
+        result = GitHubTrackerApp._format_staleness(t)
+        assert result == "<50s ago"
+
+    def test_50s_shows_1_min(self):
+        t = datetime.now(timezone.utc) - __import__("datetime").timedelta(seconds=50)
+        result = GitHubTrackerApp._format_staleness(t)
+        assert result == "<1 min ago"
+
+    def test_60s_shows_2_mins(self):
+        t = datetime.now(timezone.utc) - __import__("datetime").timedelta(seconds=60)
+        result = GitHubTrackerApp._format_staleness(t)
+        assert result == "<2 mins ago"
+
+    def test_120s_shows_3_mins(self):
+        t = datetime.now(timezone.utc) - __import__("datetime").timedelta(seconds=120)
+        result = GitHubTrackerApp._format_staleness(t)
+        assert result == "<3 mins ago"
+
+
+class TestAutoRefreshMyPrs:
+    @pytest.mark.asyncio
+    async def test_auto_refresh_my_prs_updates_table(self):
+        """_auto_refresh_my_prs refreshes open PRs in My PRs table."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(return_value=[make_review_response("APPROVED")])
+        config = make_config(github_username="testuser")
+        app = GitHubTrackerApp(config=config, github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.app._auto_refresh_my_prs()
+            my_table = app.query_one("#my-pr-table", PRTable)
+            assert my_table.pull_requests[0].approval_count == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_my_prs_sets_refreshed_at(self):
+        """_auto_refresh_my_prs sets _my_prs_refreshed_at."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(github_username="testuser"), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            pilot.app._my_prs_refreshed_at = None
+            await pilot.app._auto_refresh_my_prs()
+            assert pilot.app._my_prs_refreshed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_my_prs_no_client_does_nothing(self):
+        """_auto_refresh_my_prs returns early when no client."""
+        app = GitHubTrackerApp(config=make_config(), github_client=None)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pilot.app._my_prs_refreshed_at = None
+            await pilot.app._auto_refresh_my_prs()
+            assert pilot.app._my_prs_refreshed_at is None
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_my_prs_updates_label(self):
+        """_auto_refresh_my_prs updates the My PRs section label."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(github_username="testuser"), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.app._auto_refresh_my_prs()
+            label = app.query_one("#my-prs-label")
+            assert "updated" in str(label._Static__content)
+
+    @pytest.mark.asyncio
+    async def test_update_my_prs_label_no_refreshed_at_shows_plain(self):
+        """_update_my_prs_label shows plain 'My PRs' when no timestamp."""
+        app = GitHubTrackerApp(config=make_config(), github_client=None)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            pilot.app._my_prs_refreshed_at = None
+            pilot.app._update_my_prs_label()
+            label = app.query_one("#my-prs-label")
+            assert str(label._Static__content) == "My PRs"
+
+    @pytest.mark.asyncio
+    async def test_update_my_prs_label_swallows_query_error(self):
+        """_update_my_prs_label silently swallows widget query errors."""
+        app = GitHubTrackerApp(config=make_config(), github_client=None)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(pilot.app, "query_one", side_effect=Exception("no widget")):
+                pilot.app._update_my_prs_label()  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_refresh_focused_my_prs_sets_refreshed_at(self):
+        """Pressing r on My PRs table sets _my_prs_refreshed_at."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(github_username="testuser"), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            pilot.app._my_prs_refreshed_at = None
+            my_table = app.query_one("#my-pr-table", PRTable)
+            my_table.focus()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert pilot.app._my_prs_refreshed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_refresh_focused_other_table_does_not_set_refreshed_at(self):
+        """Pressing r on Others table does not set _my_prs_refreshed_at."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            pilot.app._my_prs_refreshed_at = None
+            other_table = app.query_one("#other-pr-table", PRTable)
+            other_table.focus()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert pilot.app._my_prs_refreshed_at is None
+
+    @pytest.mark.asyncio
+    async def test_load_prs_progressive_sets_refreshed_at(self):
+        """_load_prs_progressive sets _my_prs_refreshed_at after Phase 2."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert pilot.app._my_prs_refreshed_at is not None
+
+
+class TestHeaderRefreshInfo:
+    @pytest.mark.asyncio
+    async def test_header_shows_refresh_info(self):
+        """Header banner includes the My PRs and All PRs refresh intervals."""
+        app = GitHubTrackerApp(config=make_config(refresh_interval=300), github_client=None)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(TrackerHeader)
+            banner = str(header.query_one("#banner-content")._Static__content)
+            assert "1 min" in banner
+            assert "5 min" in banner
 
 
 class TestMain:

@@ -75,6 +75,30 @@ def group_prs(
     return my_prs, other_prs
 
 
+def compute_thread_counts(
+    threads: list[dict], github_username: str
+) -> tuple[int, int, int, int]:
+    """Return (total_threads, unresolved_threads, my_commented_threads, my_unresolved_threads).
+
+    my_* counts only threads where github_username left at least one comment.
+    """
+    total = len(threads)
+    unresolved = sum(1 for t in threads if not t.get("isResolved"))
+    username_lower = github_username.lower() if github_username else ""
+    my_commented = 0
+    my_unresolved = 0
+    for thread in threads:
+        authors = [
+            ((c.get("author") or {}).get("login") or "").lower()
+            for c in ((thread.get("comments") or {}).get("nodes") or [])
+        ]
+        if username_lower and username_lower in authors:
+            my_commented += 1
+            if not thread.get("isResolved"):
+                my_unresolved += 1
+    return total, unresolved, my_commented, my_unresolved
+
+
 def compute_user_approved(reviews: list[dict], github_username: str) -> bool:
     """Return True if the user's most recent review state is APPROVED."""
     if not github_username:

@@ -25,6 +25,7 @@ def build_banner(
     repos: list[str],
     jira_base_url: str,
     status: str,
+    refresh_info: str = "",
 ) -> str:
     """Build the full banner string with logo on the left and info on the right."""
     title = f"GitHub PR Tracker v{VERSION}"
@@ -49,6 +50,8 @@ def build_banner(
     right_lines.extend(repos_lines)
     right_lines.append("")
     right_lines.append(jira_line)
+    if refresh_info:
+        right_lines.append(f"Refresh  {refresh_info}")
     if status_line:
         right_lines.append("")
         right_lines.append(status_line)
@@ -94,11 +97,13 @@ class TrackerHeader(Widget):
         self,
         repos: list[str] | None = None,
         jira_base_url: str = "",
+        refresh_info: str = "",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._repos = repos or []
         self._jira_base_url = jira_base_url
+        self._refresh_info = refresh_info
 
     def compose(self) -> ComposeResult:
         yield Static(id="banner-content")
@@ -126,5 +131,6 @@ class TrackerHeader(Widget):
             repos=self._repos,
             jira_base_url=self._jira_base_url,
             status=self.status_text,
+            refresh_info=self._refresh_info,
         )
         content.update(banner)

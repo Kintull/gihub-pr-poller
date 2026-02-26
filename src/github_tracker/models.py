@@ -113,3 +113,7 @@ class PullRequest:
     acc_completed_steps: int = field(default=0)
     acc_total_steps: int = field(default=0)
     user_approved: bool = field(default=False)
+    total_threads: int = field(default=0)
+    unresolved_threads: int = field(default=0)
+    my_commented_threads: int = field(default=0)
+    my_unresolved_threads: int = field(default=0)

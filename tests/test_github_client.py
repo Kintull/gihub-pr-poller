@@ -581,3 +581,47 @@ class TestAggregateCIStatus:
             make_check_run_response("completed", "stale"),
         ]
         assert _aggregate_ci_status(runs) == CIStatus.UNKNOWN
+
+
+class TestFetchReviewThreads:
+    @pytest.mark.anyio
+    async def test_returns_threads_on_success(self):
+        threads = [
+            {"isResolved": False, "comments": {"nodes": [{"author": {"login": "alice"}}]}},
+            {"isResolved": True, "comments": {"nodes": []}},
+        ]
+        response_body = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
+        with respx.mock:
+            respx.post(f"{GITHUB_API}/graphql").mock(return_value=httpx.Response(200, json=response_body))
+            client = GitHubClient.__new__(GitHubClient)
+            client._client = httpx.AsyncClient(base_url=GITHUB_API)
+            result = await client.fetch_review_threads("owner/repo", 42)
+        assert result == threads
+
+    @pytest.mark.anyio
+    async def test_returns_empty_on_non_200(self):
+        with respx.mock:
+            respx.post(f"{GITHUB_API}/graphql").mock(return_value=httpx.Response(500, json={}))
+            client = GitHubClient.__new__(GitHubClient)
+            client._client = httpx.AsyncClient(base_url=GITHUB_API)
+            result = await client.fetch_review_threads("owner/repo", 42)
+        assert result == []
+
+    @pytest.mark.anyio
+    async def test_returns_empty_on_exception(self):
+        with respx.mock:
+            respx.post(f"{GITHUB_API}/graphql").mock(side_effect=httpx.ConnectError("fail"))
+            client = GitHubClient.__new__(GitHubClient)
+            client._client = httpx.AsyncClient(base_url=GITHUB_API)
+            result = await client.fetch_review_threads("owner/repo", 42)
+        assert result == []
+
+    @pytest.mark.anyio
+    async def test_returns_empty_when_nodes_not_list(self):
+        response_body = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": None}}}}}
+        with respx.mock:
+            respx.post(f"{GITHUB_API}/graphql").mock(return_value=httpx.Response(200, json=response_body))
+            client = GitHubClient.__new__(GitHubClient)
+            client._client = httpx.AsyncClient(base_url=GITHUB_API)
+            result = await client.fetch_review_threads("owner/repo", 42)
+        assert result == []

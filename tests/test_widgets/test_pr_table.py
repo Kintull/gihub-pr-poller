@@ -213,7 +213,7 @@ class TestPRTable:
             assert values[0] == "42"
             assert values[1] == "My PR"
             assert values[2] == "alice"
-            assert values[3] == "3"
+            assert values[3] == "\u2014"  # no threads yet → em dash
             assert values[4] == "\u2705"
             assert values[5] == "\U0001f7e2"
             assert values[6] == "\u2014"  # ACC = NONE → em dash
@@ -237,14 +237,36 @@ class TestPRTable:
                 assert values[4] == "\u2705", f"approval_count={count}"
 
     @pytest.mark.asyncio
-    async def test_row_values_comments_plain_number(self):
-        """Comments should display as a plain number, no emoji."""
+    async def test_row_values_threads_no_threads_dash(self):
+        """No threads → em dash for both author and non-author PRs."""
         async with PRTableTestApp().run_test() as pilot:
             table = pilot.app.query_one("#pr-table", PRTable)
-            for count in [0, 1, 7]:
-                pr = make_pr(number=count + 200, comment_count=count)
-                values = table._row_values(pr)
-                assert values[3] == str(count)
+            pr = make_pr(number=1, total_threads=0, my_commented_threads=0)
+            assert table._row_values(pr)[3] == "\u2014"
+            pr_author = make_pr(number=2, labels=frozenset({PRLabel.AUTHOR}), total_threads=0)
+            assert table._row_values(pr_author)[3] == "\u2014"
+
+    @pytest.mark.asyncio
+    async def test_row_values_threads_all_resolved_checkmark(self):
+        """All threads resolved → green ✓."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr_author = make_pr(number=1, labels=frozenset({PRLabel.AUTHOR}),
+                                total_threads=3, unresolved_threads=0)
+            assert table._row_values(pr_author)[3] == Text("\u2713", style="#339900")
+            pr_other = make_pr(number=2, my_commented_threads=2, my_unresolved_threads=0)
+            assert table._row_values(pr_other)[3] == Text("\u2713", style="#339900")
+
+    @pytest.mark.asyncio
+    async def test_row_values_threads_unresolved_yellow(self):
+        """Unresolved threads → yellow count."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr_author = make_pr(number=1, labels=frozenset({PRLabel.AUTHOR}),
+                                total_threads=5, unresolved_threads=3)
+            assert table._row_values(pr_author)[3] == Text("3", style="#ffcc66")
+            pr_other = make_pr(number=2, my_commented_threads=4, my_unresolved_threads=2)
+            assert table._row_values(pr_other)[3] == Text("2", style="#ffcc66")
 
     @pytest.mark.asyncio
     async def test_row_values_merged_pr(self):

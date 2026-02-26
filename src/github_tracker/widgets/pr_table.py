@@ -86,7 +86,18 @@ class PRTable(DataTable):
                 approval_text = Text(str(pr.approval_count), style="#339900")
             else:
                 approval_text = Text(str(pr.approval_count), style="#ffcc66")
-            comment_text = str(pr.comment_count)
+            if is_author:
+                unresolved = pr.unresolved_threads
+                has_threads = pr.total_threads > 0
+            else:
+                unresolved = pr.my_unresolved_threads
+                has_threads = pr.my_commented_threads > 0
+            if not has_threads:
+                comment_text: str | Text = "\u2014"
+            elif unresolved == 0:
+                comment_text = Text("\u2713", style="#339900")
+            else:
+                comment_text = Text(str(unresolved), style="#ffcc66")
         acc_text = acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps)
         jira_text = pr.jira_ticket or "\u2014"
         return (

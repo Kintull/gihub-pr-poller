@@ -10,11 +10,12 @@ from github_tracker.pr_service import (
     compute_ci_progress,
     compute_phase1_labels,
     compute_phase2_labels,
+    compute_thread_counts,
     compute_user_approved,
     filter_expired_merged_prs,
     group_prs,
 )
-from tests.conftest import make_pr, make_workflow_run_response
+from tests.conftest import make_pr, make_review_thread, make_workflow_run_response
 
 
 class TestComputePhase1Labels:
@@ -490,3 +491,59 @@ class TestFilterExpiredMergedPrs:
         ]
         result = filter_expired_merged_prs(prs, retention_days=2)
         assert [p.number for p in result] == [2, 3]
+
+
+class TestComputeThreadCounts:
+    def test_empty_threads(self):
+        assert compute_thread_counts([], "alice") == (0, 0, 0, 0)
+
+    def test_all_resolved_no_username_match(self):
+        threads = [
+            make_review_thread(is_resolved=True, authors=["bob"]),
+            make_review_thread(is_resolved=True, authors=["carol"]),
+        ]
+        total, unresolved, my_commented, my_unresolved = compute_thread_counts(threads, "alice")
+        assert total == 2
+        assert unresolved == 0
+        assert my_commented == 0
+        assert my_unresolved == 0
+
+    def test_unresolved_counted(self):
+        threads = [
+            make_review_thread(is_resolved=False, authors=["bob"]),
+            make_review_thread(is_resolved=True, authors=["carol"]),
+        ]
+        _, unresolved, _, _ = compute_thread_counts(threads, "alice")
+        assert unresolved == 1
+
+    def test_my_commented_and_unresolved(self):
+        threads = [
+            make_review_thread(is_resolved=False, authors=["alice", "bob"]),
+            make_review_thread(is_resolved=True, authors=["alice"]),
+            make_review_thread(is_resolved=False, authors=["bob"]),
+        ]
+        total, unresolved, my_commented, my_unresolved = compute_thread_counts(threads, "alice")
+        assert total == 3
+        assert unresolved == 2
+        assert my_commented == 2
+        assert my_unresolved == 1
+
+    def test_username_case_insensitive(self):
+        threads = [make_review_thread(is_resolved=False, authors=["Alice"])]
+        _, _, my_commented, my_unresolved = compute_thread_counts(threads, "alice")
+        assert my_commented == 1
+        assert my_unresolved == 1
+
+    def test_empty_username_no_my_counts(self):
+        threads = [make_review_thread(is_resolved=False, authors=["alice"])]
+        _, _, my_commented, my_unresolved = compute_thread_counts(threads, "")
+        assert my_commented == 0
+        assert my_unresolved == 0
+
+    def test_thread_with_no_comments(self):
+        threads = [make_review_thread(is_resolved=False, authors=[])]
+        total, unresolved, my_commented, my_unresolved = compute_thread_counts(threads, "alice")
+        assert total == 1
+        assert unresolved == 1
+        assert my_commented == 0
+        assert my_unresolved == 0

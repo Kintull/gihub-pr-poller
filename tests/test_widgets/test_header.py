@@ -54,6 +54,15 @@ class TestBuildBanner:
         banner = build_banner(repos=["o/r"], jira_base_url="", status="")
         assert "GitHub PR Tracker" in banner
 
+    def test_refresh_info_shown(self):
+        banner = build_banner(repos=["o/r"], jira_base_url="", status="", refresh_info="My PRs: 1 min | All: 5 min")
+        assert "Refresh" in banner
+        assert "1 min" in banner
+
+    def test_no_refresh_info_omitted(self):
+        banner = build_banner(repos=["o/r"], jira_base_url="", status="", refresh_info="")
+        assert "Refresh" not in banner
+
     def test_contains_logo(self):
         banner = build_banner(repos=[], jira_base_url="", status="")
         for line in LOGO_LINES:

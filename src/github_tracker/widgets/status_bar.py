@@ -24,7 +24,7 @@ class StatusBar(Widget):
     }
     """
 
-    HINTS = " ↑↓ Navigate │ Tab: Switch table │ Enter: Open PR │ J: Open Jira │ r: Refresh │ q: Quit │ ?: Help "
+    HINTS = " ↑↓ Navigate │ Tab: Switch table │ Enter: Open PR │ J: Open Jira │ r: Refresh │ f: Favourite │ q: Quit │ ?: Help "
 
     def compose(self) -> ComposeResult:
         yield Static(self.HINTS, id="status-hints")

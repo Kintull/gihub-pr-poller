@@ -6,6 +6,7 @@ import asyncio
 import logging
 import webbrowser
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -20,6 +21,7 @@ from github_tracker.pr_service import (
     compute_ci_progress,
     compute_phase1_labels,
     compute_phase2_labels,
+    compute_thread_counts,
     compute_user_approved,
     filter_expired_merged_prs,
     group_prs,
@@ -30,6 +32,8 @@ from github_tracker.widgets.pr_table import PRTable
 from github_tracker.widgets.status_bar import StatusBar
 
 logger = logging.getLogger("github_tracker.app")
+
+MY_PRS_REFRESH_INTERVAL = 60  # seconds
 
 HELP_TEXT = """
 Keyboard Shortcuts:
@@ -111,14 +115,20 @@ class GitHubTrackerApp(App):
         self._open_url = open_url
         self._spinner_timer = None
         self._refresh_timer = None
+        self._my_prs_refresh_timer = None
+        self._label_update_timer = None
         self._help_visible = False
         self._merged_prs: list[PullRequest] = []
         self._previous_open_prs: list[PullRequest] = []
+        self._my_prs_refreshed_at: datetime | None = None
 
     def compose(self) -> ComposeResult:
+        all_mins = self.config.refresh_interval // 60
+        refresh_info = f"My PRs: {MY_PRS_REFRESH_INTERVAL // 60} min | All: {all_mins} min"
         yield TrackerHeader(
             repos=self.config.github_repos,
             jira_base_url=self.config.jira_base_url,
+            refresh_info=refresh_info,
         )
         yield Container(
             Static("My PRs", id="my-prs-label", classes="section-label"),
@@ -147,6 +157,10 @@ class GitHubTrackerApp(App):
         self._refresh_timer = self.set_interval(
             self.config.refresh_interval, self._auto_refresh
         )
+        self._my_prs_refresh_timer = self.set_interval(
+            MY_PRS_REFRESH_INTERVAL, self._auto_refresh_my_prs
+        )
+        self._label_update_timer = self.set_interval(10, self._update_my_prs_label)
 
         # Hide both sections initially
         self._set_section_visible("my", False)
@@ -222,7 +236,6 @@ class GitHubTrackerApp(App):
                     detail = await self.github_client.fetch_pr_detail(prev_pr.repo, prev_pr.number)
                     merged_at_str = detail.get("merged_at")
                     if merged_at_str:
-                        from datetime import datetime
                         merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
                         merged_pr = replace(
                             prev_pr,
@@ -295,10 +308,11 @@ class GitHubTrackerApp(App):
             head_sha = raw_pr["head"]["sha"]
 
             try:
-                reviews, check_runs, pr_detail = await asyncio.gather(
+                reviews, check_runs, pr_detail, threads = await asyncio.gather(
                     self.github_client.fetch_reviews(repo, pr_number),
                     self.github_client.fetch_check_runs(repo, head_sha),
                     self.github_client.fetch_pr_detail(repo, pr_number),
+                    self.github_client.fetch_review_threads(repo, pr_number),
                 )
             except Exception as e:
                 logger.error("Error loading details for PR #%d: %s", pr_number, e)
@@ -309,6 +323,9 @@ class GitHubTrackerApp(App):
             ci_completed, ci_total = compute_ci_progress(check_runs)
             comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
             user_approved = compute_user_approved(reviews, self.config.github_username)
+            total_threads, unresolved_threads, my_commented, my_unresolved = compute_thread_counts(
+                threads, self.config.github_username
+            )
 
             # Find the PR in whichever table contains it
             pr = self._find_pr_in_tables(pr_number)
@@ -327,6 +344,10 @@ class GitHubTrackerApp(App):
                 comment_count=comment_count,
                 labels=new_labels,
                 user_approved=user_approved,
+                total_threads=total_threads,
+                unresolved_threads=unresolved_threads,
+                my_commented_threads=my_commented,
+                my_unresolved_threads=my_unresolved,
             )
             self._update_pr_in_tables(updated_pr)
             # Update in all_prs for final save
@@ -347,6 +368,8 @@ class GitHubTrackerApp(App):
         header.status_text = f"{total} PRs"
         logger.info("Finished loading all PR details")
 
+        self._my_prs_refreshed_at = datetime.now(timezone.utc)
+        self._update_my_prs_label()
         save_state(final_open, self._merged_prs)
         self._previous_open_prs = final_open
 
@@ -425,6 +448,63 @@ class GitHubTrackerApp(App):
             except Exception:
                 pass
 
+    async def _do_refresh_open_prs(self, open_prs: list[PullRequest]) -> None:
+        """Fetch fresh detail/reviews/CI/threads for each PR and update tables."""
+        for pr in open_prs:
+            try:
+                pr_detail = await self.github_client.fetch_pr_detail(pr.repo, pr.number)
+                head_sha = (pr_detail.get("head") or {}).get("sha", "")
+                if not head_sha:
+                    continue
+                reviews, check_runs, threads = await asyncio.gather(
+                    self.github_client.fetch_reviews(pr.repo, pr.number),
+                    self.github_client.fetch_check_runs(pr.repo, head_sha),
+                    self.github_client.fetch_review_threads(pr.repo, pr.number),
+                )
+            except Exception as e:
+                logger.error("Error refreshing PR #%d: %s", pr.number, e)
+                continue
+
+            approval_count = count_approvals(reviews)
+            ci_status = _aggregate_ci_status(check_runs)
+            ci_completed, ci_total = compute_ci_progress(check_runs)
+            comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
+            user_approved = compute_user_approved(reviews, self.config.github_username)
+            total_threads, unresolved_threads, my_commented, my_unresolved = compute_thread_counts(
+                threads, self.config.github_username
+            )
+            phase1_labels = compute_phase1_labels(pr, pr_detail, self.config.github_username)
+            if PRLabel.FAVOURITE in pr.labels:
+                phase1_labels = phase1_labels | {PRLabel.FAVOURITE}
+            new_labels = compute_phase2_labels(phase1_labels, reviews, self.config.github_username)
+            updated_pr = replace(
+                pr,
+                approval_count=approval_count,
+                ci_status=ci_status,
+                ci_completed_steps=ci_completed,
+                ci_total_steps=ci_total,
+                comment_count=comment_count,
+                labels=new_labels,
+                user_approved=user_approved,
+                total_threads=total_threads,
+                unresolved_threads=unresolved_threads,
+                my_commented_threads=my_commented,
+                my_unresolved_threads=my_unresolved,
+            )
+            self._update_pr_in_tables(updated_pr)
+
+    def _regroup_and_save(self) -> None:
+        """Re-group all PRs into my/other tables and persist state."""
+        my_table = self.query_one("#my-pr-table", PRTable)
+        other_table = self.query_one("#other-pr-table", PRTable)
+        final_open = [
+            p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
+            if p.merged_at is None
+        ]
+        final_open.sort(key=lambda p: p.updated_at, reverse=True)
+        self._display_grouped_prs(final_open + self._merged_prs)
+        save_state(final_open, self._merged_prs)
+
     async def _refresh_focused_prs(self) -> None:
         """Refresh only the PRs in the currently focused table."""
         table = self._get_focused_table()
@@ -442,41 +522,7 @@ class GitHubTrackerApp(App):
             len(open_prs), len(merged_prs_in_table),
         )
 
-        for i, pr in enumerate(open_prs):
-            try:
-                pr_detail = await self.github_client.fetch_pr_detail(pr.repo, pr.number)
-                head_sha = (pr_detail.get("head") or {}).get("sha", "")
-                if not head_sha:
-                    continue
-                reviews, check_runs = await asyncio.gather(
-                    self.github_client.fetch_reviews(pr.repo, pr.number),
-                    self.github_client.fetch_check_runs(pr.repo, head_sha),
-                )
-            except Exception as e:
-                logger.error("Error refreshing PR #%d: %s", pr.number, e)
-                continue
-
-            approval_count = count_approvals(reviews)
-            ci_status = _aggregate_ci_status(check_runs)
-            ci_completed, ci_total = compute_ci_progress(check_runs)
-            comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
-            user_approved = compute_user_approved(reviews, self.config.github_username)
-            phase1_labels = compute_phase1_labels(pr, pr_detail, self.config.github_username)
-            if PRLabel.FAVOURITE in pr.labels:
-                phase1_labels = phase1_labels | {PRLabel.FAVOURITE}
-            new_labels = compute_phase2_labels(phase1_labels, reviews, self.config.github_username)
-            updated_pr = replace(
-                pr,
-                approval_count=approval_count,
-                ci_status=ci_status,
-                ci_completed_steps=ci_completed,
-                ci_total_steps=ci_total,
-                comment_count=comment_count,
-                labels=new_labels,
-                user_approved=user_approved,
-            )
-            self._update_pr_in_tables(updated_pr)
-            header.status_text = f"Refreshing {len(prs)} PRs — {i + 1}/{len(open_prs)}"
+        await self._do_refresh_open_prs(open_prs)
 
         if merged_prs_in_table:
             repos_with_merged = {pr.repo for pr in merged_prs_in_table}
@@ -520,17 +566,48 @@ class GitHubTrackerApp(App):
                         break
 
         my_table = self.query_one("#my-pr-table", PRTable)
-        other_table = self.query_one("#other-pr-table", PRTable)
-        final_open = [
-            p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
-            if p.merged_at is None
-        ]
-        final_open.sort(key=lambda p: p.updated_at, reverse=True)
-        self._display_grouped_prs(final_open + self._merged_prs)
-        save_state(final_open, self._merged_prs)
+        self._regroup_and_save()
+
+        if table is my_table:
+            self._my_prs_refreshed_at = datetime.now(timezone.utc)
+            self._update_my_prs_label()
 
         header.status_text = f"{len(prs)} PRs"
         logger.info("Finished refreshing focused table")
+
+    async def _auto_refresh_my_prs(self) -> None:
+        """Auto-refresh My PRs table every MY_PRS_REFRESH_INTERVAL seconds."""
+        if not self.github_client:
+            return
+        my_table = self.query_one("#my-pr-table", PRTable)
+        open_prs = [pr for pr in my_table.pull_requests if pr.merged_at is None]
+        await self._do_refresh_open_prs(open_prs)
+        self._regroup_and_save()
+        self._my_prs_refreshed_at = datetime.now(timezone.utc)
+        self._update_my_prs_label()
+        logger.debug("My PRs auto-refresh complete (%d open PRs)", len(open_prs))
+
+    @staticmethod
+    def _format_staleness(refreshed_at: datetime | None) -> str:
+        """Return a human-readable 'updated X ago' string."""
+        if refreshed_at is None:
+            return ""
+        seconds = int((datetime.now(timezone.utc) - refreshed_at).total_seconds())
+        if seconds < 50:
+            bucket = ((seconds // 10) + 1) * 10
+            return f"<{bucket}s ago"
+        minutes = (seconds // 60) + 1
+        unit = "min" if minutes == 1 else "mins"
+        return f"<{minutes} {unit} ago"
+
+    def _update_my_prs_label(self) -> None:
+        """Update the My PRs section label with the staleness indicator."""
+        staleness = self._format_staleness(self._my_prs_refreshed_at)
+        label_text = f"My PRs — updated {staleness}" if staleness else "My PRs"
+        try:
+            self.query_one("#my-prs-label", Static).update(label_text)
+        except Exception:
+            pass
 
     async def _auto_refresh(self) -> None:
         """Auto-refresh triggered by timer."""

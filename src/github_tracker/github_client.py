@@ -167,6 +167,40 @@ class GitHubClient:
             return []
         return data.get("jobs", [])
 
+    async def fetch_review_threads(self, repo: str, pr_number: int) -> list[dict]:
+        """Fetch review threads for a PR via the GraphQL API."""
+        owner, name = repo.split("/", 1)
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            "repository(owner:$owner,name:$name){"
+            "pullRequest(number:$number){"
+            "reviewThreads(first:100){nodes{isResolved "
+            "comments(first:100){nodes{author{login}}}}}}}}"
+        )
+        logger.debug("Fetching review threads for %s#%d", repo, pr_number)
+        try:
+            response = await self._client.post(
+                "/graphql",
+                json={"query": query, "variables": {"owner": owner, "name": name, "number": pr_number}},
+            )
+            if response.status_code != 200:
+                logger.warning("GraphQL error for %s#%d: %d", repo, pr_number, response.status_code)
+                return []
+            data = response.json()
+            threads = (
+                (data.get("data") or {})
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("reviewThreads", {})
+                .get("nodes", [])
+            )
+            result = threads if isinstance(threads, list) else []
+            logger.debug("Found %d review threads for %s#%d", len(result), repo, pr_number)
+            return result
+        except Exception as e:
+            logger.warning("Error fetching review threads for %s#%d: %s", repo, pr_number, e)
+            return []
+
     async def fetch_pr_detail(self, repo: str, pr_number: int) -> dict:
         """Fetch full detail for a single pull request."""
         logger.debug("Fetching PR detail for %s#%d", repo, pr_number)

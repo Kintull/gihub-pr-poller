@@ -32,6 +32,10 @@ def make_pr(**overrides) -> PullRequest:
         "acc_completed_steps": 0,
         "acc_total_steps": 0,
         "user_approved": False,
+        "total_threads": 0,
+        "unresolved_threads": 0,
+        "my_commented_threads": 0,
+        "my_unresolved_threads": 0,
     }
     defaults.update(overrides)
     return PullRequest(**defaults)
@@ -82,6 +86,21 @@ def make_workflow_run_response(
         "created_at": created_at,
         "updated_at": updated_at,
     }
+
+
+def make_review_thread(is_resolved: bool = False, authors: list[str] | None = None) -> dict:
+    """Factory for creating a GraphQL review thread node."""
+    return {
+        "isResolved": is_resolved,
+        "comments": {
+            "nodes": [{"author": {"login": a}} for a in (authors or [])]
+        },
+    }
+
+
+def make_review_threads_response(threads: list[dict]) -> dict:
+    """Factory for a GraphQL reviewThreads response."""
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
 
 
 def make_workflow_run_jobs_response(jobs: list[dict] | None = None) -> dict:
