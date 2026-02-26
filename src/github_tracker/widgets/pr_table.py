@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from rich.style import Style
+from rich.text import Text
 from textual.widgets import DataTable
 
-from github_tracker.models import CIStatus, DeployStatus, PullRequest, acc_deploy_display, ci_display
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest, acc_deploy_display, ci_display
 
 COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "\u2705", "CI", "ACC", "Jira")
 
@@ -30,6 +32,12 @@ class PRTable(DataTable):
         for col in COLUMNS:
             self.add_column(col, key=col)
         self.cursor_type = "row"
+
+    def get_component_rich_style(self, name: str, *, partial: bool = False) -> Style:
+        style = super().get_component_rich_style(name, partial=partial)
+        if name == "datatable--cursor":
+            return Style(bgcolor=style.bgcolor)
+        return style
 
     @property
     def pull_requests(self) -> list[PullRequest]:
@@ -58,26 +66,33 @@ class PRTable(DataTable):
             if pr.acc_deploy in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO):
                 self.update_cell(str(pr.number), "ACC", acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps))
 
-    def _row_values(self, pr: PullRequest) -> tuple[str, ...]:
+    def _row_values(self, pr: PullRequest) -> tuple:
         """Build the cell values for a PR row."""
+        is_author = PRLabel.AUTHOR in pr.labels
+        author_text: str | Text = Text(pr.author, style="#336699") if is_author else pr.author
+        title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
         is_merged = pr.merged_at is not None
         if is_merged:
             comment_text = "\u2014"
-            approval_text = "\u2014"
+            approval_text: str | Text = "\u2014"
             ci_text = "\u2014"
         else:
             ci_text = ci_display(pr.ci_status, self._spinner_index, pr.ci_completed_steps, pr.ci_total_steps)
             if pr.approval_count >= 2:
                 approval_text = "\u2705"
+            elif is_author:
+                approval_text = Text(str(pr.approval_count), style="#336699")
+            elif pr.user_approved:
+                approval_text = Text(str(pr.approval_count), style="#339900")
             else:
-                approval_text = str(pr.approval_count)
+                approval_text = Text(str(pr.approval_count), style="#ffcc66")
             comment_text = str(pr.comment_count)
         acc_text = acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps)
         jira_text = pr.jira_ticket or "\u2014"
         return (
             str(pr.number),
-            pr.title,
-            pr.author,
+            title,
+            author_text,
             comment_text,
             approval_text,
             ci_text,

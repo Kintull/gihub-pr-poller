@@ -7,7 +7,9 @@ from dataclasses import replace
 import pytest
 from textual.app import App, ComposeResult
 
-from github_tracker.models import CIStatus, DeployStatus
+from rich.text import Text
+
+from github_tracker.models import CIStatus, DeployStatus, PRLabel
 from github_tracker.widgets.pr_table import COLUMNS, PRTable
 from tests.conftest import make_pr
 
@@ -219,13 +221,20 @@ class TestPRTable:
 
     @pytest.mark.asyncio
     async def test_row_values_approval_levels(self):
-        """Approvals: 0 → '0', 1 → '1', >=2 → '✅'."""
+        """Approvals: 0 → yellow Text '0', 1 → yellow Text '1', >=2 → '✅'."""
         async with PRTableTestApp().run_test() as pilot:
             table = pilot.app.query_one("#pr-table", PRTable)
-            for count, expected in [(0, "0"), (1, "1"), (2, "\u2705"), (5, "\u2705")]:
+            # Non-author, non-approved PRs with count < 2 get yellow Text
+            for count in [0, 1]:
                 pr = make_pr(number=count + 100, approval_count=count)
                 values = table._row_values(pr)
-                assert values[4] == expected, f"approval_count={count}"
+                assert isinstance(values[4], Text), f"approval_count={count}"
+                assert values[4].plain == str(count), f"approval_count={count}"
+            # count >= 2 always shows checkmark regardless of labels/approval
+            for count in [2, 5]:
+                pr = make_pr(number=count + 100, approval_count=count)
+                values = table._row_values(pr)
+                assert values[4] == "\u2705", f"approval_count={count}"
 
     @pytest.mark.asyncio
     async def test_row_values_comments_plain_number(self):
@@ -324,3 +333,86 @@ class TestPRTable:
             initial_index = table._spinner_index
             table.advance_spinner()
             assert table._spinner_index == initial_index + 1
+
+    @pytest.mark.asyncio
+    async def test_row_values_approval_author_pr_blue(self):
+        """AUTHOR PRs show approval count in #336699 blue."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, approval_count=1, labels=frozenset({PRLabel.AUTHOR}))
+            values = table._row_values(pr)
+            assert values[4] == Text("1", style="#336699")
+
+    @pytest.mark.asyncio
+    async def test_row_values_author_column_blue_for_author(self):
+        """Author name is shown in #336699 blue when PR belongs to current user."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, author="myuser", labels=frozenset({PRLabel.AUTHOR}))
+            values = table._row_values(pr)
+            assert values[2] == Text("myuser", style="#336699")
+
+    @pytest.mark.asyncio
+    async def test_row_values_author_column_plain_for_non_author(self):
+        """Author name is shown as a plain string for other users' PRs."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, author="otheruser", labels=frozenset())
+            values = table._row_values(pr)
+            assert values[2] == "otheruser"
+
+    @pytest.mark.asyncio
+    async def test_row_values_approval_user_approved_green(self):
+        """user_approved PRs (not author) show green colored count."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, approval_count=1, user_approved=True)
+            values = table._row_values(pr)
+            assert values[4] == Text("1", style="#339900")
+
+    @pytest.mark.asyncio
+    async def test_row_values_approval_needs_review_yellow(self):
+        """Non-author, not-yet-approved PRs with < 2 approvals show yellow count."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, approval_count=0, user_approved=False)
+            values = table._row_values(pr)
+            assert values[4] == Text("0", style="#ffcc66")
+
+    @pytest.mark.asyncio
+    async def test_cursor_style_has_no_foreground_color(self):
+        """Cursor component style has no foreground color so cell text colors are preserved."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            style = table.get_component_rich_style("datatable--cursor")
+            assert style.color is None
+
+    @pytest.mark.asyncio
+    async def test_non_cursor_component_style_passthrough(self):
+        """Non-cursor component styles are returned unchanged."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            style = table.get_component_rich_style("datatable--hover")
+            # Just verify we get a Style object back (passthrough path)
+            from rich.style import Style
+            assert isinstance(style, Style)
+
+    @pytest.mark.asyncio
+    async def test_row_values_favourite_shows_star_prefix(self):
+        """Favourite PRs display ★ prefix in the title column."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, title="My PR", labels=frozenset({PRLabel.FAVOURITE}))
+            values = table._row_values(pr)
+            assert values[1] == "\u2605 My PR"
+
+    @pytest.mark.asyncio
+    async def test_row_values_non_favourite_plain_title(self):
+        """Non-favourite PRs display their title without any prefix."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, title="My PR")
+            values = table._row_values(pr)
+            assert values[1] == "My PR"
+
+

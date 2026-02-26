@@ -48,6 +48,7 @@ class PRLabel(Enum):
     REVIEW_REQUESTED = "review_requested"
     MENTIONED = "mentioned"
     COMMENTED = "commented"
+    FAVOURITE = "favourite"
 
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -111,3 +112,4 @@ class PullRequest:
     ci_total_steps: int = field(default=0)
     acc_completed_steps: int = field(default=0)
     acc_total_steps: int = field(default=0)
+    user_approved: bool = field(default=False)

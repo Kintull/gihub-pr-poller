@@ -882,6 +882,64 @@ class TestRefreshFocusedPrs:
                     assert len(app._merged_prs) == 1
 
     @pytest.mark.asyncio
+    async def test_refresh_saves_state_after_regrouping(self):
+        """Focused refresh saves state so migrated PRs persist across restarts."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        config = make_config(github_username="myuser")
+        with patch("github_tracker.app.save_state") as mock_save:
+            app = GitHubTrackerApp(config=config, github_client=client)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+                mock_save.reset_mock()
+                client.fetch_pr_detail = AsyncMock(return_value={
+                    "head": {"sha": "abc123"},
+                    "comments": 0,
+                    "review_comments": 0,
+                    "requested_reviewers": [{"login": "myuser"}],
+                    "body": "",
+                })
+                await pilot.press("r")
+                await pilot.pause()
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+                mock_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_migrates_pr_to_my_prs_when_reviewer_added(self):
+        """PR moves from Other PRs to My PRs when user becomes a reviewer on focused refresh."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        config = make_config(github_username="myuser")
+        app = GitHubTrackerApp(config=config, github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            # PR starts in Other PRs (user not a reviewer yet)
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            assert other_table.row_count == 1
+            assert my_table.row_count == 0
+            # Now user is added as reviewer
+            client.fetch_pr_detail = AsyncMock(return_value={
+                "head": {"sha": "abc123"},
+                "comments": 0,
+                "review_comments": 0,
+                "requested_reviewers": [{"login": "myuser"}],
+                "body": "",
+            })
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            # PR should now be in My PRs
+            assert my_table.row_count == 1
+            assert other_table.row_count == 0
+
+    @pytest.mark.asyncio
     async def test_refresh_merged_pr_syncs_merged_prs_list(self):
         """Focused refresh keeps _merged_prs in sync with updated step counts."""
         from datetime import datetime, timedelta, timezone as tz
@@ -937,6 +995,205 @@ class TestCIProgressPropagation:
             pr = table.pull_requests[0]
             assert pr.ci_completed_steps == 1
             assert pr.ci_total_steps == 2
+
+
+class TestUserApprovedPropagation:
+    def _find_pr_in_tables(self, app, pr_number: int):
+        """Find a PR by number across both tables."""
+        for table_id in ("#my-pr-table", "#other-pr-table"):
+            table = app.query_one(table_id, PRTable)
+            idx = table._pr_index.get(pr_number)
+            if idx is not None:
+                return table.pull_requests[idx]
+        return None
+
+    @pytest.mark.asyncio
+    async def test_user_approved_set_in_phase2_when_approved(self):
+        """Phase 2 sets user_approved=True when user has approved the PR."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(return_value=[make_review_response("APPROVED", "myuser")])
+        config = make_config(github_username="myuser")
+        app = GitHubTrackerApp(config=config, github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            pr = self._find_pr_in_tables(pilot.app, 1)
+            assert pr is not None
+            assert pr.user_approved is True
+
+    @pytest.mark.asyncio
+    async def test_user_approved_false_when_no_review_by_user(self):
+        """Phase 2 leaves user_approved=False when user has not reviewed."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(return_value=[make_review_response("APPROVED", "otheruser")])
+        config = make_config(github_username="myuser")
+        app = GitHubTrackerApp(config=config, github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            pr = self._find_pr_in_tables(pilot.app, 1)
+            assert pr is not None
+            assert pr.user_approved is False
+
+    @pytest.mark.asyncio
+    async def test_user_approved_set_in_focused_refresh(self):
+        """Focused refresh ('r') also computes and sets user_approved."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(return_value=[])
+        # No username → PR stays in other table, no labels
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            table = _get_other_table(pilot.app)
+            assert table.pull_requests[0].user_approved is False
+            # After refresh with approval (still no username → always False)
+            client.fetch_reviews.return_value = [make_review_response("APPROVED", "")]
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert table.pull_requests[0].user_approved is False
+
+
+class TestFavourite:
+    @pytest.mark.asyncio
+    async def test_favourite_moves_pr_to_my_prs(self):
+        """Pressing f on an Other PR adds FAVOURITE and moves it to My PRs."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            assert other_table.row_count == 1
+            assert my_table.row_count == 0
+            other_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 1
+            assert other_table.row_count == 0
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_favourite_toggle_removes_from_my_prs(self):
+        """Pressing f again on a FAVOURITE-only PR removes it from My PRs."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            other_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 1
+            my_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 0
+            assert other_table.row_count == 1
+            assert PRLabel.FAVOURITE not in other_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_favourite_saves_state(self):
+        """Pressing f saves state with the FAVOURITE label."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        with patch("github_tracker.app.save_state") as mock_save:
+            app = GitHubTrackerApp(config=make_config(), github_client=client)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+                mock_save.reset_mock()
+                app.query_one("#other-pr-table", PRTable).focus()
+                await pilot.press("f")
+                await pilot.pause()
+                mock_save.assert_called_once()
+                saved_prs = mock_save.call_args[0][0]
+                assert any(PRLabel.FAVOURITE in p.labels for p in saved_prs)
+
+    @pytest.mark.asyncio
+    async def test_favourite_label_preserved_through_phase1(self):
+        """FAVOURITE label survives the Phase 1 label recompute on full reload."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(github_username="myuser"), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            app.query_one("#other-pr-table", PRTable).focus()
+            await pilot.press("f")
+            await pilot.pause()
+            my_table = app.query_one("#my-pr-table", PRTable)
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+            # Simulate a full reload — FAVOURITE must survive Phase 1
+            app.run_worker(app._load_prs_progressive(), exclusive=True)
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert my_table.row_count == 1
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_favourite_label_preserved_through_focused_refresh(self):
+        """FAVOURITE label survives a focused refresh."""
+        raw = [make_github_pr_response(number=1, requested_reviewers=[])]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            app.query_one("#other-pr-table", PRTable).focus()
+            await pilot.press("f")
+            await pilot.pause()
+            my_table = app.query_one("#my-pr-table", PRTable)
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+            my_table.focus()
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_favourite_no_table_focused_does_nothing(self):
+        """action_favourite returns early when no table is focused."""
+        client = make_mock_client(raw_prs=[])
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            with patch.object(pilot.app, "_get_focused_table", return_value=None):
+                pilot.app.action_favourite()  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_favourite_no_pr_selected_warns(self):
+        """Pressing f with no PR selected shows a warning."""
+        client = make_mock_client(raw_prs=[])
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            # Patch notify to detect the warning
+            with patch.object(pilot.app, "notify") as mock_notify:
+                pilot.app.action_favourite()
+                mock_notify.assert_called_once()
+
 
 
 class TestMain:

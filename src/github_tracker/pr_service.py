@@ -75,6 +75,20 @@ def group_prs(
     return my_prs, other_prs
 
 
+def compute_user_approved(reviews: list[dict], github_username: str) -> bool:
+    """Return True if the user's most recent review state is APPROVED."""
+    if not github_username:
+        return False
+
+    username_lower = github_username.lower()
+    last_state: str | None = None
+    for review in reviews:
+        user = (review.get("user") or {}).get("login", "")
+        if user.lower() == username_lower:
+            last_state = review.get("state", "")
+    return last_state == "APPROVED"
+
+
 def compute_ci_progress(check_runs: list[dict]) -> tuple[int, int]:
     """Return (completed, total) step counts from check runs."""
     total = len(check_runs)

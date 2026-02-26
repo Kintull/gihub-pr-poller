@@ -31,6 +31,7 @@ def make_pr(**overrides) -> PullRequest:
         "ci_total_steps": 0,
         "acc_completed_steps": 0,
         "acc_total_steps": 0,
+        "user_approved": False,
     }
     defaults.update(overrides)
     return PullRequest(**defaults)

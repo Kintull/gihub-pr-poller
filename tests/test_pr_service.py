@@ -10,6 +10,7 @@ from github_tracker.pr_service import (
     compute_ci_progress,
     compute_phase1_labels,
     compute_phase2_labels,
+    compute_user_approved,
     filter_expired_merged_prs,
     group_prs,
 )
@@ -406,6 +407,54 @@ class TestComputeAccDeploy:
         assert status == DeployStatus.ACC_DEPLOYING
         assert completed == 0
         assert total == 0
+
+
+class TestComputeUserApproved:
+    def test_empty_username_returns_false(self):
+        reviews = [{"state": "APPROVED", "user": {"login": "alice"}}]
+        assert compute_user_approved(reviews, "") is False
+
+    def test_empty_reviews_returns_false(self):
+        assert compute_user_approved([], "alice") is False
+
+    def test_no_matching_user_returns_false(self):
+        reviews = [{"state": "APPROVED", "user": {"login": "bob"}}]
+        assert compute_user_approved(reviews, "alice") is False
+
+    def test_approved_returns_true(self):
+        reviews = [{"state": "APPROVED", "user": {"login": "alice"}}]
+        assert compute_user_approved(reviews, "alice") is True
+
+    def test_changes_requested_returns_false(self):
+        reviews = [{"state": "CHANGES_REQUESTED", "user": {"login": "alice"}}]
+        assert compute_user_approved(reviews, "alice") is False
+
+    def test_latest_review_counts_approved_then_changes(self):
+        """If user approved then submitted CHANGES_REQUESTED, result is False."""
+        reviews = [
+            {"state": "APPROVED", "user": {"login": "alice"}},
+            {"state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+        ]
+        assert compute_user_approved(reviews, "alice") is False
+
+    def test_latest_review_counts_changes_then_approved(self):
+        """If user submitted CHANGES_REQUESTED then approved, result is True."""
+        reviews = [
+            {"state": "CHANGES_REQUESTED", "user": {"login": "alice"}},
+            {"state": "APPROVED", "user": {"login": "alice"}},
+        ]
+        assert compute_user_approved(reviews, "alice") is True
+
+    def test_case_insensitive(self):
+        reviews = [{"state": "APPROVED", "user": {"login": "Alice"}}]
+        assert compute_user_approved(reviews, "alice") is True
+
+    def test_none_user_in_review_skipped(self):
+        reviews = [
+            {"state": "APPROVED", "user": None},
+            {"state": "APPROVED", "user": {"login": "alice"}},
+        ]
+        assert compute_user_approved(reviews, "alice") is True
 
 
 class TestFilterExpiredMergedPrs:

@@ -14,12 +14,13 @@ from textual.widgets import DataTable, Static
 
 from github_tracker.config import Config
 from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
-from github_tracker.models import CIStatus, DeployStatus, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
 from github_tracker.pr_service import (
     compute_acc_deploy,
     compute_ci_progress,
     compute_phase1_labels,
     compute_phase2_labels,
+    compute_user_approved,
     filter_expired_merged_prs,
     group_prs,
 )
@@ -94,6 +95,7 @@ class GitHubTrackerApp(App):
         Binding("question_mark", "toggle_help", "Help", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("j", "cursor_down", "Down", show=False),
+        Binding("f", "favourite", "Favourite", show=False),
     ]
 
     def __init__(
@@ -177,6 +179,14 @@ class GitHubTrackerApp(App):
         all_prs: list[PullRequest] = []
         raw_data: list[tuple[str, dict]] = []
 
+        _my = self.query_one("#my-pr-table", PRTable)
+        _other = self.query_one("#other-pr-table", PRTable)
+        favourite_keys = {
+            (p.number, p.repo)
+            for p in list(_my.pull_requests) + list(_other.pull_requests)
+            if PRLabel.FAVOURITE in p.labels
+        }
+
         for repo in self.config.github_repos:
             try:
                 logger.info("Fetching PR list for repo: %s", repo)
@@ -188,6 +198,8 @@ class GitHubTrackerApp(App):
                     labels = compute_phase1_labels(
                         pr, raw_pr, self.config.github_username
                     )
+                    if (pr.number, repo) in favourite_keys:
+                        labels = labels | {PRLabel.FAVOURITE}
                     pr = replace(pr, labels=labels)
                     all_prs.append(pr)
                     raw_data.append((repo, raw_pr))
@@ -296,6 +308,7 @@ class GitHubTrackerApp(App):
             ci_status = _aggregate_ci_status(check_runs)
             ci_completed, ci_total = compute_ci_progress(check_runs)
             comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
+            user_approved = compute_user_approved(reviews, self.config.github_username)
 
             # Find the PR in whichever table contains it
             pr = self._find_pr_in_tables(pr_number)
@@ -313,6 +326,7 @@ class GitHubTrackerApp(App):
                 ci_total_steps=ci_total,
                 comment_count=comment_count,
                 labels=new_labels,
+                user_approved=user_approved,
             )
             self._update_pr_in_tables(updated_pr)
             # Update in all_prs for final save
@@ -446,7 +460,11 @@ class GitHubTrackerApp(App):
             ci_status = _aggregate_ci_status(check_runs)
             ci_completed, ci_total = compute_ci_progress(check_runs)
             comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
-            new_labels = compute_phase2_labels(pr.labels, reviews, self.config.github_username)
+            user_approved = compute_user_approved(reviews, self.config.github_username)
+            phase1_labels = compute_phase1_labels(pr, pr_detail, self.config.github_username)
+            if PRLabel.FAVOURITE in pr.labels:
+                phase1_labels = phase1_labels | {PRLabel.FAVOURITE}
+            new_labels = compute_phase2_labels(phase1_labels, reviews, self.config.github_username)
             updated_pr = replace(
                 pr,
                 approval_count=approval_count,
@@ -455,6 +473,7 @@ class GitHubTrackerApp(App):
                 ci_total_steps=ci_total,
                 comment_count=comment_count,
                 labels=new_labels,
+                user_approved=user_approved,
             )
             self._update_pr_in_tables(updated_pr)
             header.status_text = f"Refreshing {len(prs)} PRs — {i + 1}/{len(open_prs)}"
@@ -499,6 +518,16 @@ class GitHubTrackerApp(App):
                     if m.number == mpr.number and m.repo == mpr.repo:
                         self._merged_prs[j] = updated_mpr
                         break
+
+        my_table = self.query_one("#my-pr-table", PRTable)
+        other_table = self.query_one("#other-pr-table", PRTable)
+        final_open = [
+            p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
+            if p.merged_at is None
+        ]
+        final_open.sort(key=lambda p: p.updated_at, reverse=True)
+        self._display_grouped_prs(final_open + self._merged_prs)
+        save_state(final_open, self._merged_prs)
 
         header.status_text = f"{len(prs)} PRs"
         logger.info("Finished refreshing focused table")
@@ -558,4 +587,31 @@ class GitHubTrackerApp(App):
         table = self._get_focused_table()
         if table:
             table.action_cursor_down()
+
+    def action_favourite(self) -> None:
+        """Toggle favourite status on the selected PR."""
+        table = self._get_focused_table()
+        if table is None:
+            return
+        pr = table.get_selected_pr()
+        if pr is None:
+            self.notify("No PR selected", severity="warning")
+            return
+        if PRLabel.FAVOURITE in pr.labels:
+            new_labels = pr.labels - {PRLabel.FAVOURITE}
+            self.notify(f"Unfavourited #{pr.number}")
+        else:
+            new_labels = pr.labels | {PRLabel.FAVOURITE}
+            self.notify(f"Favourited #{pr.number}")
+        updated_pr = replace(pr, labels=new_labels)
+        self._update_pr_in_tables(updated_pr)
+        my_table = self.query_one("#my-pr-table", PRTable)
+        other_table = self.query_one("#other-pr-table", PRTable)
+        final_open = [
+            p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
+            if p.merged_at is None
+        ]
+        final_open.sort(key=lambda p: p.updated_at, reverse=True)
+        self._display_grouped_prs(final_open + self._merged_prs)
+        save_state(final_open, self._merged_prs)
 

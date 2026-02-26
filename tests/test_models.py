@@ -294,6 +294,41 @@ class TestPullRequest:
         assert pr.acc_deploy == DeployStatus.ACC_DEPLOYING
         assert pr.merged_at == now
 
+    def test_default_user_approved(self):
+        pr = PullRequest(
+            number=1,
+            title="Fix bug",
+            url="https://github.com/o/r/pull/1",
+            branch_name="fix-bug",
+            comment_count=0,
+            approval_count=0,
+            ci_status=CIStatus.UNKNOWN,
+            jira_ticket=None,
+            jira_url=None,
+            author="bob",
+            updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            repo="o/r",
+        )
+        assert pr.user_approved is False
+
+    def test_explicit_user_approved(self):
+        pr = PullRequest(
+            number=1,
+            title="Fix bug",
+            url="https://github.com/o/r/pull/1",
+            branch_name="fix-bug",
+            comment_count=0,
+            approval_count=0,
+            ci_status=CIStatus.UNKNOWN,
+            jira_ticket=None,
+            jira_url=None,
+            author="bob",
+            updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            repo="o/r",
+            user_approved=True,
+        )
+        assert pr.user_approved is True
+
     def test_creation_no_jira(self):
         pr = PullRequest(
             number=1,
