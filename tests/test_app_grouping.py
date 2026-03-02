@@ -181,9 +181,9 @@ class TestGroupedDisplay:
 
     @pytest.mark.asyncio
     async def test_cached_prs_with_labels_grouped(self):
-        """Cached PRs with labels are grouped correctly on mount."""
+        """Cached PRs with FAVOURITE are grouped into My PRs on mount."""
         cached = [
-            make_pr(number=1, labels=frozenset({PRLabel.AUTHOR})),
+            make_pr(number=1, labels=frozenset({PRLabel.FAVOURITE})),
             make_pr(number=2),
         ]
         with patch("github_tracker.app.load_state", return_value=(cached, [])):
@@ -283,7 +283,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_get_focused_table_fallback_my_visible(self):
         """_get_focused_table falls back to my_table when it's visible but unfocused."""
-        cached = [make_pr(number=1, labels=frozenset({PRLabel.AUTHOR}))]
+        cached = [make_pr(number=1, labels=frozenset({PRLabel.FAVOURITE}))]
         with patch("github_tracker.app.load_state", return_value=(cached, [])):
             with patch("github_tracker.app.save_state"):
                 app = GitHubTrackerApp(config=make_config(), github_client=None)

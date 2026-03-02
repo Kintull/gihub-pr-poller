@@ -909,8 +909,12 @@ class TestRefreshFocusedPrs:
                 mock_save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_refresh_migrates_pr_to_my_prs_when_reviewer_added(self):
-        """PR moves from Other PRs to My PRs when user becomes a reviewer on focused refresh."""
+    async def test_refresh_does_not_auto_follow_when_reviewer_added(self):
+        """Focused refresh does NOT auto-follow an existing PR when user becomes a reviewer.
+
+        Auto-FAVOURITE only happens on first discovery. Known PRs keep their current
+        FAVOURITE state — if they have none, they stay in Others even after labels change.
+        """
         raw = [make_github_pr_response(number=1, requested_reviewers=[])]
         client = make_mock_client(raw_prs=raw)
         config = make_config(github_username="myuser")
@@ -936,9 +940,9 @@ class TestRefreshFocusedPrs:
             await pilot.pause()
             await pilot.app.workers.wait_for_complete()
             await pilot.pause()
-            # PR should now be in My PRs
-            assert my_table.row_count == 1
-            assert other_table.row_count == 0
+            # PR stays in Others — refresh does not auto-follow existing PRs
+            assert my_table.row_count == 0
+            assert other_table.row_count == 1
 
     @pytest.mark.asyncio
     async def test_refresh_merged_pr_syncs_merged_prs_list(self):
@@ -1194,6 +1198,117 @@ class TestFavourite:
             with patch.object(pilot.app, "notify") as mock_notify:
                 pilot.app.action_favourite()
                 mock_notify.assert_called_once()
+
+
+class TestAutoFavourite:
+    @pytest.mark.asyncio
+    async def test_new_pr_with_author_gets_auto_favourited(self):
+        """New PR where user is the author gets auto-FAVOURITE and goes to My PRs."""
+        raw = [make_github_pr_response(number=1, user={"login": "myuser"})]
+        client = make_mock_client(raw_prs=raw)
+        config = make_config(github_username="myuser")
+        app = GitHubTrackerApp(config=config, github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            my_table = app.query_one("#my-pr-table", PRTable)
+            other_table = app.query_one("#other-pr-table", PRTable)
+            assert my_table.row_count == 1
+            assert other_table.row_count == 0
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_known_pr_without_favourite_stays_in_others(self):
+        """Known PR (previously seen) without FAVOURITE stays in Others even if user is author."""
+        raw = [make_github_pr_response(number=1, user={"login": "myuser"})]
+        client = make_mock_client(raw_prs=raw)
+        config = make_config(github_username="myuser")
+        # Simulate a "known" PR in _previous_open_prs (no FAVOURITE label)
+        known_pr = make_pr(number=1, repo="owner/repo", author="myuser", labels=frozenset({PRLabel.AUTHOR}))
+        with patch("github_tracker.app.load_state", return_value=([known_pr], [])):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=config, github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    my_table = app.query_one("#my-pr-table", PRTable)
+                    other_table = app.query_one("#other-pr-table", PRTable)
+                    assert my_table.row_count == 0
+                    assert other_table.row_count == 1
+
+    @pytest.mark.asyncio
+    async def test_migration_pr_in_my_prs_table_gets_favourite(self):
+        """Migration: PR in My PRs table (no FAVOURITE) gets FAVOURITE on reload."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        config = make_config(github_username="myuser")
+        # Cached PR with no FAVOURITE (old-scheme state)
+        cached_pr = make_pr(number=1, repo="owner/repo", labels=frozenset())
+        with patch("github_tracker.app.load_state", return_value=([cached_pr], [])):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=config, github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    my_table = app.query_one("#my-pr-table", PRTable)
+                    other_table = app.query_one("#other-pr-table", PRTable)
+                    # Manually put PR in My PRs table (simulating old-scheme display)
+                    my_table.load_prs([cached_pr])
+                    other_table.load_prs([])
+                    # Trigger a full reload
+                    app.run_worker(app._load_prs_progressive(), exclusive=True)
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    # PR should have FAVOURITE (migration path: my_pr_keys)
+                    assert my_table.row_count == 1
+                    assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_new_pr_with_no_phase1_interest_gets_favourite_from_commented(self):
+        """New PR with no Phase 1 interest gets auto-FAVOURITE when user commented (Phase 2)."""
+        raw = [make_github_pr_response(number=1)]  # author "testuser", not "myuser"
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(
+            return_value=[make_review_response(state="COMMENTED", user="myuser")]
+        )
+        config = make_config(github_username="myuser")
+        app = GitHubTrackerApp(config=config, github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            my_table = app.query_one("#my-pr-table", PRTable)
+            other_table = app.query_one("#other-pr-table", PRTable)
+            assert my_table.row_count == 1
+            assert other_table.row_count == 0
+            assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
+
+    @pytest.mark.asyncio
+    async def test_known_unfollowed_pr_with_commented_stays_in_others(self):
+        """Known PR without FAVOURITE stays in Others even when COMMENTED is discovered."""
+        raw = [make_github_pr_response(number=1)]  # author "testuser"
+        client = make_mock_client(raw_prs=raw)
+        client.fetch_reviews = AsyncMock(
+            return_value=[make_review_response(state="COMMENTED", user="myuser")]
+        )
+        config = make_config(github_username="myuser")
+        # PR is "known" (previously seen, no FAVOURITE — never followed or explicitly unfollowed)
+        known_pr = make_pr(number=1, repo="owner/repo", labels=frozenset())
+        with patch("github_tracker.app.load_state", return_value=([known_pr], [])):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=config, github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    my_table = app.query_one("#my-pr-table", PRTable)
+                    other_table = app.query_one("#other-pr-table", PRTable)
+                    assert my_table.row_count == 0
+                    assert other_table.row_count == 1
 
 
 class TestFormatStaleness:

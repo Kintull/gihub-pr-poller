@@ -154,16 +154,25 @@ class TestGroupPrs:
         assert my == []
         assert other == []
 
-    def test_all_mine(self):
+    def test_favourite_goes_to_my_prs(self):
         prs = [
-            make_pr(number=1, labels=frozenset({PRLabel.AUTHOR})),
-            make_pr(number=2, labels=frozenset({PRLabel.REVIEW_REQUESTED})),
+            make_pr(number=1, labels=frozenset({PRLabel.FAVOURITE})),
+            make_pr(number=2, labels=frozenset({PRLabel.FAVOURITE, PRLabel.AUTHOR})),
         ]
         my, other = group_prs(prs)
         assert len(my) == 2
         assert len(other) == 0
 
-    def test_all_other(self):
+    def test_author_alone_goes_to_others(self):
+        prs = [
+            make_pr(number=1, labels=frozenset({PRLabel.AUTHOR})),
+            make_pr(number=2, labels=frozenset({PRLabel.REVIEW_REQUESTED})),
+        ]
+        my, other = group_prs(prs)
+        assert len(my) == 0
+        assert len(other) == 2
+
+    def test_no_labels_goes_to_others(self):
         prs = [make_pr(number=1), make_pr(number=2)]
         my, other = group_prs(prs)
         assert len(my) == 0
@@ -171,24 +180,49 @@ class TestGroupPrs:
 
     def test_mixed(self):
         prs = [
-            make_pr(number=1, labels=frozenset({PRLabel.AUTHOR})),
+            make_pr(number=1, labels=frozenset({PRLabel.FAVOURITE})),
             make_pr(number=2),
-            make_pr(number=3, labels=frozenset({PRLabel.COMMENTED})),
+            make_pr(number=3, labels=frozenset({PRLabel.AUTHOR})),
         ]
         my, other = group_prs(prs)
-        assert [p.number for p in my] == [1, 3]
-        assert [p.number for p in other] == [2]
+        assert [p.number for p in my] == [1]
+        # related (AUTHOR) sorts before unrelated
+        assert [p.number for p in other] == [3, 2]
 
     def test_preserves_ordering(self):
         prs = [
-            make_pr(number=5, labels=frozenset({PRLabel.AUTHOR})),
+            make_pr(number=5, labels=frozenset({PRLabel.FAVOURITE})),
             make_pr(number=3),
-            make_pr(number=1, labels=frozenset({PRLabel.MENTIONED})),
+            make_pr(number=1, labels=frozenset({PRLabel.FAVOURITE, PRLabel.MENTIONED})),
             make_pr(number=4),
         ]
         my, other = group_prs(prs)
         assert [p.number for p in my] == [5, 1]
         assert [p.number for p in other] == [3, 4]
+
+    def test_others_related_sorted_before_unrelated(self):
+        """Related PRs (any interest label, no FAVOURITE) sort before unrelated in Others."""
+        prs = [
+            make_pr(number=1),
+            make_pr(number=2, labels=frozenset({PRLabel.COMMENTED})),
+            make_pr(number=3),
+            make_pr(number=4, labels=frozenset({PRLabel.REVIEW_REQUESTED})),
+        ]
+        _, other = group_prs(prs)
+        related = [p for p in other if p.labels]
+        unrelated = [p for p in other if not p.labels]
+        assert other == related + unrelated
+
+    def test_others_within_tier_order_preserved(self):
+        """Within the related and unrelated tiers, input order is preserved."""
+        prs = [
+            make_pr(number=10),
+            make_pr(number=20, labels=frozenset({PRLabel.AUTHOR})),
+            make_pr(number=30),
+            make_pr(number=40, labels=frozenset({PRLabel.MENTIONED})),
+        ]
+        _, other = group_prs(prs)
+        assert [p.number for p in other] == [20, 40, 10, 30]
 
 
 class TestComputeCiProgress:

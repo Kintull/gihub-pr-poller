@@ -437,4 +437,24 @@ class TestPRTable:
             values = table._row_values(pr)
             assert values[1] == "My PR"
 
+    @pytest.mark.asyncio
+    async def test_row_values_related_pr_number_highlighted_yellow(self):
+        """PRs with interest labels (AUTHOR, REVIEW_REQUESTED, MENTIONED, COMMENTED) show
+        the # column in yellow to indicate a relationship without FAVOURITE."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            for label in (PRLabel.AUTHOR, PRLabel.REVIEW_REQUESTED, PRLabel.MENTIONED, PRLabel.COMMENTED):
+                pr = make_pr(number=42, labels=frozenset({label}))
+                values = table._row_values(pr)
+                assert values[0] == Text("42", style="#ffcc66"), f"expected yellow # for {label}"
+
+    @pytest.mark.asyncio
+    async def test_row_values_unrelated_pr_number_plain(self):
+        """PRs with no interest labels show the # column as a plain string."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=7, labels=frozenset())
+            values = table._row_values(pr)
+            assert values[0] == "7"
+
 

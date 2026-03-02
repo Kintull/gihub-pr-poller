@@ -71,6 +71,8 @@ class PRTable(DataTable):
         is_author = PRLabel.AUTHOR in pr.labels
         author_text: str | Text = Text(pr.author, style="#336699") if is_author else pr.author
         title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        has_interest = bool(pr.labels - {PRLabel.FAVOURITE})
+        number_text: str | Text = Text(str(pr.number), style="#ffcc66") if has_interest else str(pr.number)
         is_merged = pr.merged_at is not None
         if is_merged:
             comment_text = "\u2014"
@@ -101,7 +103,7 @@ class PRTable(DataTable):
         acc_text = acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps)
         jira_text = pr.jira_ticket or "\u2014"
         return (
-            str(pr.number),
+            number_text,
             title,
             author_text,
             comment_text,

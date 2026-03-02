@@ -195,11 +195,20 @@ class GitHubTrackerApp(App):
 
         _my = self.query_one("#my-pr-table", PRTable)
         _other = self.query_one("#other-pr-table", PRTable)
-        favourite_keys = {
-            (p.number, p.repo)
-            for p in list(_my.pull_requests) + list(_other.pull_requests)
+
+        # favourite_keys: currently-displayed My PRs (handles migration from old label scheme)
+        # + any PRs in Others that were explicitly favourite'd
+        my_pr_keys = {(p.number, p.repo) for p in _my.pull_requests}
+        favourite_keys = my_pr_keys | {
+            (p.number, p.repo) for p in _other.pull_requests
             if PRLabel.FAVOURITE in p.labels
         }
+
+        # known_keys: all PRs seen in the previous load (both My and Others)
+        known_keys = {(p.number, p.repo) for p in self._previous_open_prs}
+
+        # Track new PRs with no Phase 1 interest (candidates for Phase 2 auto-FAVOURITE)
+        new_pr_keys: set[tuple[int, str]] = set()
 
         for repo in self.config.github_repos:
             try:
@@ -212,8 +221,17 @@ class GitHubTrackerApp(App):
                     labels = compute_phase1_labels(
                         pr, raw_pr, self.config.github_username
                     )
-                    if (pr.number, repo) in favourite_keys:
+                    key = (pr.number, repo)
+                    if key in favourite_keys:
+                        # Preserve existing FAVOURITE (known favourite or migration)
                         labels = labels | {PRLabel.FAVOURITE}
+                    elif key not in known_keys:
+                        # New PR: auto-follow if user has natural interest
+                        if labels:  # any Phase 1 interest label
+                            labels = labels | {PRLabel.FAVOURITE}
+                        else:
+                            new_pr_keys.add(key)  # no interest yet; check again in Phase 2
+                    # else: known PR not in favourite_keys → user unfollowed → no FAVOURITE
                     pr = replace(pr, labels=labels)
                     all_prs.append(pr)
                     raw_data.append((repo, raw_pr))
@@ -335,6 +353,9 @@ class GitHubTrackerApp(App):
             new_labels = compute_phase2_labels(
                 pr.labels, reviews, self.config.github_username
             )
+            # Auto-follow new PRs where COMMENTED was just discovered
+            if (pr_number, repo) in new_pr_keys and PRLabel.COMMENTED in new_labels and PRLabel.FAVOURITE not in new_labels:
+                new_labels = new_labels | {PRLabel.FAVOURITE}
             updated_pr = replace(
                 pr,
                 approval_count=approval_count,

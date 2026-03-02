@@ -64,14 +64,14 @@ def compute_phase2_labels(
 def group_prs(
     prs: list[PullRequest],
 ) -> tuple[list[PullRequest], list[PullRequest]]:
-    """Split PRs into (my_prs, other_prs). "Mine" = has any label. Preserves ordering."""
-    my_prs: list[PullRequest] = []
-    other_prs: list[PullRequest] = []
-    for pr in prs:
-        if pr.labels:
-            my_prs.append(pr)
-        else:
-            other_prs.append(pr)
+    """Split PRs into (my_prs, other_prs). "Mine" = has FAVOURITE label.
+
+    Within other_prs, related PRs (any non-FAVOURITE interest label) sort before
+    unrelated ones. Existing ordering is preserved within each tier.
+    """
+    my_prs = [pr for pr in prs if PRLabel.FAVOURITE in pr.labels]
+    other_prs = [pr for pr in prs if PRLabel.FAVOURITE not in pr.labels]
+    other_prs.sort(key=lambda pr: 0 if pr.labels - {PRLabel.FAVOURITE} else 1)
     return my_prs, other_prs
 
 
