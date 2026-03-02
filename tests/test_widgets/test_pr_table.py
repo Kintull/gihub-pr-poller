@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -456,5 +457,32 @@ class TestPRTable:
             pr = make_pr(number=7, labels=frozenset())
             values = table._row_values(pr)
             assert values[0] == "7"
+
+    @pytest.mark.asyncio
+    async def test_flash_title_cycles_and_restores(self):
+        """flash_title calls update_cell 7 times: 6 flash steps then plain restore."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, title="Flash Me", labels=frozenset())
+            table.load_prs([pr])
+            with patch("github_tracker.widgets.pr_table.asyncio.sleep", new_callable=AsyncMock):
+                with patch.object(table, "update_cell") as mock_update:
+                    await table.flash_title(1)
+            assert mock_update.call_count == 7
+            # Odd steps are grey, even steps are default
+            assert mock_update.call_args_list[0] == call("1", "Title", Text("Flash Me", style="#888888"))
+            assert mock_update.call_args_list[1] == call("1", "Title", Text("Flash Me", style="default"))
+            # Final restore is plain string
+            assert mock_update.call_args_list[6] == call("1", "Title", "Flash Me")
+
+    @pytest.mark.asyncio
+    async def test_flash_title_unknown_pr_is_noop(self):
+        """flash_title does nothing when the PR is not in the table."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            table.load_prs([make_pr(number=1)])
+            with patch.object(table, "update_cell") as mock_update:
+                await table.flash_title(9999)
+            mock_update.assert_not_called()
 
 

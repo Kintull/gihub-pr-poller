@@ -1177,6 +1177,31 @@ class TestFavourite:
             assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
 
     @pytest.mark.asyncio
+    async def test_unfavourite_triggers_flash_in_others(self):
+        """Pressing f to unfollow a PR triggers flash_title on the Other PRs table."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            # Move to My PRs first
+            other_table = app.query_one("#other-pr-table", PRTable)
+            other_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            # Now unfollow — flash should fire
+            my_table = app.query_one("#my-pr-table", PRTable)
+            my_table.focus()
+            with patch.object(other_table, "flash_title", new_callable=AsyncMock) as mock_flash:
+                await pilot.press("f")
+                await pilot.pause()
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+            mock_flash.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
     async def test_favourite_no_table_focused_does_nothing(self):
         """action_favourite returns early when no table is focused."""
         client = make_mock_client(raw_prs=[])

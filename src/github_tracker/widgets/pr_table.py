@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 from rich.style import Style
@@ -130,6 +131,20 @@ class PRTable(DataTable):
             self.add_row(*values, key=str(pr.number))
         if self._pull_requests:
             self.move_cursor(row=min(saved_row, len(self._pull_requests) - 1))
+
+    async def flash_title(self, pr_number: int) -> None:
+        """Flash the title cell of a PR 3× (grey ↔ white) over ~1 second."""
+        idx = self._pr_index.get(pr_number)
+        if idx is None:
+            return
+        pr = self._pull_requests[idx]
+        base_title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        row_key = str(pr_number)
+        for i in range(6):
+            color = "#888888" if i % 2 == 0 else "default"
+            self.update_cell(row_key, "Title", Text(base_title, style=color))
+            await asyncio.sleep(1 / 6)
+        self.update_cell(row_key, "Title", base_title)
 
     def get_selected_pr(self) -> PullRequest | None:
         """Get the currently selected pull request."""

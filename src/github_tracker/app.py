@@ -695,7 +695,8 @@ class GitHubTrackerApp(App):
         if pr is None:
             self.notify("No PR selected", severity="warning")
             return
-        if PRLabel.FAVOURITE in pr.labels:
+        removing_favourite = PRLabel.FAVOURITE in pr.labels
+        if removing_favourite:
             new_labels = pr.labels - {PRLabel.FAVOURITE}
             self.notify(f"Unfavourited #{pr.number}")
         else:
@@ -712,4 +713,6 @@ class GitHubTrackerApp(App):
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
         self._display_grouped_prs(final_open + self._merged_prs)
         save_state(final_open, self._merged_prs)
+        if removing_favourite:
+            self.run_worker(other_table.flash_title(pr.number))
 
