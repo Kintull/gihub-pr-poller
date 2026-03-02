@@ -485,4 +485,46 @@ class TestPRTable:
                 await table.flash_title(9999)
             mock_update.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_flash_title_aborts_mid_loop_if_pr_removed(self):
+        """flash_title stops mid-animation if the PR leaves this table."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            table.load_prs([make_pr(number=1, title="Gone")])
+
+            sleep_count = 0
+
+            async def _sleep_and_remove(_):
+                nonlocal sleep_count
+                sleep_count += 1
+                if sleep_count == 1:
+                    table._pr_index.clear()
+
+            with patch("github_tracker.widgets.pr_table.asyncio.sleep", side_effect=_sleep_and_remove):
+                with patch.object(table, "update_cell") as mock_update:
+                    await table.flash_title(1)
+            # Only the first flash step fired before the abort
+            assert mock_update.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_flash_title_skips_restore_if_pr_removed_after_last_flash(self):
+        """flash_title skips the restore call if the PR is removed after the last flash step."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            table.load_prs([make_pr(number=1, title="Gone")])
+
+            sleep_count = 0
+
+            async def _sleep_and_remove(_):
+                nonlocal sleep_count
+                sleep_count += 1
+                if sleep_count == 6:
+                    table._pr_index.clear()
+
+            with patch("github_tracker.widgets.pr_table.asyncio.sleep", side_effect=_sleep_and_remove):
+                with patch.object(table, "update_cell") as mock_update:
+                    await table.flash_title(1)
+            # All 6 flash steps fired, but the final restore was skipped
+            assert mock_update.call_count == 6
+
 

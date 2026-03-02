@@ -1177,6 +1177,66 @@ class TestFavourite:
             assert PRLabel.FAVOURITE in my_table.pull_requests[0].labels
 
     @pytest.mark.asyncio
+    async def test_favourite_preserves_focus_on_others_table(self):
+        """Pressing f to follow a PR keeps focus on Others (not stolen by My PRs)."""
+        raw = [make_github_pr_response(number=1), make_github_pr_response(number=2)]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            other_table.focus()
+            assert other_table.has_focus
+            await pilot.press("f")
+            await pilot.pause()
+            assert other_table.has_focus
+
+    @pytest.mark.asyncio
+    async def test_favourite_preserves_focus_on_my_prs_table(self):
+        """Pressing f to unfollow a PR keeps focus on My PRs (not stolen by Others)."""
+        raw = [make_github_pr_response(number=1), make_github_pr_response(number=2)]
+        client = make_mock_client(raw_prs=raw)
+        cached = [
+            make_pr(number=1, repo="owner/repo", labels=frozenset({PRLabel.FAVOURITE})),
+            make_pr(number=2, repo="owner/repo", labels=frozenset({PRLabel.FAVOURITE})),
+        ]
+        with patch("github_tracker.app.load_state", return_value=(cached, [])):
+            with patch("github_tracker.app.save_state"):
+                app = GitHubTrackerApp(config=make_config(), github_client=client)
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    await pilot.app.workers.wait_for_complete()
+                    await pilot.pause()
+                    my_table = app.query_one("#my-pr-table", PRTable)
+                    my_table.focus()
+                    assert my_table.has_focus
+                    await pilot.press("f")
+                    await pilot.pause()
+                    assert my_table.has_focus
+
+    @pytest.mark.asyncio
+    async def test_favourite_triggers_flash_in_my_prs(self):
+        """Pressing f to follow a PR triggers flash_title on the My PRs table."""
+        raw = [make_github_pr_response(number=1)]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            my_table = app.query_one("#my-pr-table", PRTable)
+            other_table = app.query_one("#other-pr-table", PRTable)
+            other_table.focus()
+            with patch.object(my_table, "flash_title", new_callable=AsyncMock) as mock_flash:
+                await pilot.press("f")
+                await pilot.pause()
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+            mock_flash.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
     async def test_unfavourite_triggers_flash_in_others(self):
         """Pressing f to unfollow a PR triggers flash_title on the Other PRs table."""
         raw = [make_github_pr_response(number=1)]

@@ -395,7 +395,7 @@ class GitHubTrackerApp(App):
         self._previous_open_prs = final_open
 
     def _display_grouped_prs(
-        self, all_prs: list[PullRequest], is_cached: bool = False
+        self, all_prs: list[PullRequest], is_cached: bool = False, preserve_focus: bool = False
     ) -> None:
         """Split PRs into my/other groups and display in respective tables."""
         my_prs, other_prs = group_prs(all_prs)
@@ -415,11 +415,12 @@ class GitHubTrackerApp(App):
         header = self.query_one(TrackerHeader)
         if is_cached:
             header.status_text = f"{len(all_prs)} PRs (cached) — refreshing..."
-        # Focus the first non-empty table
-        if my_prs:
-            my_table.focus()
-        elif other_prs:
-            other_table.focus()
+        if not preserve_focus:
+            # Focus the first non-empty table
+            if my_prs:
+                my_table.focus()
+            elif other_prs:
+                other_table.focus()
 
     def _set_section_visible(self, section: str, visible: bool) -> None:
         """Show or hide a section (label + table)."""
@@ -711,8 +712,10 @@ class GitHubTrackerApp(App):
             if p.merged_at is None
         ]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
-        self._display_grouped_prs(final_open + self._merged_prs)
+        self._display_grouped_prs(final_open + self._merged_prs, preserve_focus=True)
         save_state(final_open, self._merged_prs)
         if removing_favourite:
             self.run_worker(other_table.flash_title(pr.number))
+        else:
+            self.run_worker(my_table.flash_title(pr.number))
 

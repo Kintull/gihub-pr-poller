@@ -133,7 +133,11 @@ class PRTable(DataTable):
             self.move_cursor(row=min(saved_row, len(self._pull_requests) - 1))
 
     async def flash_title(self, pr_number: int) -> None:
-        """Flash the title cell of a PR 3× (grey ↔ white) over ~1 second."""
+        """Flash the title cell of a PR 3× (grey ↔ white) over ~1 second.
+
+        Aborts silently if the PR is removed from this table during the animation
+        (e.g. because the user pressed f again before the flash finished).
+        """
         idx = self._pr_index.get(pr_number)
         if idx is None:
             return
@@ -141,9 +145,13 @@ class PRTable(DataTable):
         base_title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
         row_key = str(pr_number)
         for i in range(6):
+            if pr_number not in self._pr_index:
+                return
             color = "#888888" if i % 2 == 0 else "default"
             self.update_cell(row_key, "Title", Text(base_title, style=color))
             await asyncio.sleep(1 / 6)
+        if pr_number not in self._pr_index:
+            return
         self.update_cell(row_key, "Title", base_title)
 
     def get_selected_pr(self) -> PullRequest | None:
