@@ -216,14 +216,14 @@ class TestPRTable:
             assert values[1] == "My PR"
             assert values[2] == "alice"
             assert values[3] == "\u2014"  # no threads yet → em dash
-            assert values[4] == "\u2705"
+            assert values[4] == Text("✓", style=Color.GREEN)
             assert values[5] == Text("✓", style=Color.GREEN)
             assert values[6] == "\u2014"  # ACC = NONE → em dash
             assert values[7] == "PROJ-1"
 
     @pytest.mark.asyncio
     async def test_row_values_approval_levels(self):
-        """Approvals: 0 → yellow Text '0', 1 → yellow Text '1', >=2 → '✅'."""
+        """Approvals: 0 → yellow Text '0', 1 → yellow Text '1', >=2 → green '✓'."""
         async with PRTableTestApp().run_test() as pilot:
             table = pilot.app.query_one("#pr-table", PRTable)
             # Non-author, non-approved PRs with count < 2 get yellow Text
@@ -236,7 +236,7 @@ class TestPRTable:
             for count in [2, 5]:
                 pr = make_pr(number=count + 100, approval_count=count)
                 values = table._row_values(pr)
-                assert values[4] == "\u2705", f"approval_count={count}"
+                assert values[4] == Text("✓", style=Color.GREEN), f"approval_count={count}"
 
     @pytest.mark.asyncio
     async def test_row_values_threads_no_threads_dash(self):

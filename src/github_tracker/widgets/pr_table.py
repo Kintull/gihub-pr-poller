@@ -12,7 +12,7 @@ from textual.widgets import DataTable
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest, acc_deploy_display, ci_display
 from github_tracker.theme import Color
 
-COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "\u2705", "CI", "ACC", "Jira")
+COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "Jira")
 
 
 class PRTable(DataTable):
@@ -83,7 +83,7 @@ class PRTable(DataTable):
         else:
             ci_text = ci_display(pr.ci_status, self._spinner_index, pr.ci_completed_steps, pr.ci_total_steps)
             if pr.approval_count >= 2:
-                approval_text = "\u2705"
+                approval_text = Text("✓", style=Color.GREEN)
             elif is_author:
                 approval_text = Text(str(pr.approval_count), style=Color.BLUE)
             elif pr.user_approved:
