@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import importlib.metadata
 import logging
 import sys
 
@@ -15,6 +17,11 @@ logger = logging.getLogger("github_tracker.main")
 
 def main() -> None:
     """Run the GitHub PR Tracker application."""
+    version = importlib.metadata.version("github-tracker")
+    parser = argparse.ArgumentParser(description="GitHub PR tracker TUI")
+    parser.add_argument("--version", action="version", version=f"github-tracker {version}")
+    parser.parse_args()
+
     setup_logging()
 
     logger.info("Starting GitHub PR Tracker")

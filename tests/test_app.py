@@ -1572,38 +1572,48 @@ class TestHeaderRefreshInfo:
 
 class TestMain:
     def test_config_error(self):
-        with patch("github_tracker.__main__.setup_logging"):
-            with patch(
-                "github_tracker.__main__.load_config",
-                side_effect=__import__("github_tracker.config", fromlist=["ConfigError"]).ConfigError("bad config"),
-            ):
-                with pytest.raises(SystemExit) as exc_info:
-                    from github_tracker.__main__ import main
-                    main()
-                assert exc_info.value.code == 1
-
-    def test_auth_error(self):
-        with patch("github_tracker.__main__.setup_logging"):
-            with patch("github_tracker.__main__.load_config", return_value=Config()):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.setup_logging"):
                 with patch(
-                    "github_tracker.__main__.get_gh_token",
-                    side_effect=__import__(
-                        "github_tracker.github_client", fromlist=["GitHubAuthError"]
-                    ).GitHubAuthError("no auth"),
+                    "github_tracker.__main__.load_config",
+                    side_effect=__import__("github_tracker.config", fromlist=["ConfigError"]).ConfigError("bad config"),
                 ):
                     with pytest.raises(SystemExit) as exc_info:
                         from github_tracker.__main__ import main
                         main()
                     assert exc_info.value.code == 1
 
-    def test_success(self):
-        with patch("github_tracker.__main__.setup_logging"):
-            with patch("github_tracker.__main__.load_config", return_value=Config()):
-                with patch("github_tracker.__main__.get_gh_token", return_value="token"):
-                    with patch("github_tracker.__main__.GitHubClient") as mock_client_cls:
-                        with patch("github_tracker.__main__.GitHubTrackerApp") as mock_app_cls:
-                            mock_app_instance = MagicMock()
-                            mock_app_cls.return_value = mock_app_instance
+    def test_auth_error(self):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.setup_logging"):
+                with patch("github_tracker.__main__.load_config", return_value=Config()):
+                    with patch(
+                        "github_tracker.__main__.get_gh_token",
+                        side_effect=__import__(
+                            "github_tracker.github_client", fromlist=["GitHubAuthError"]
+                        ).GitHubAuthError("no auth"),
+                    ):
+                        with pytest.raises(SystemExit) as exc_info:
                             from github_tracker.__main__ import main
                             main()
-                            mock_app_instance.run.assert_called_once()
+                        assert exc_info.value.code == 1
+
+    def test_success(self):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.setup_logging"):
+                with patch("github_tracker.__main__.load_config", return_value=Config()):
+                    with patch("github_tracker.__main__.get_gh_token", return_value="token"):
+                        with patch("github_tracker.__main__.GitHubClient") as mock_client_cls:
+                            with patch("github_tracker.__main__.GitHubTrackerApp") as mock_app_cls:
+                                mock_app_instance = MagicMock()
+                                mock_app_cls.return_value = mock_app_instance
+                                from github_tracker.__main__ import main
+                                main()
+                                mock_app_instance.run.assert_called_once()
+
+    def test_version_flag(self):
+        with patch("sys.argv", ["github-tracker", "--version"]):
+            with pytest.raises(SystemExit) as exc_info:
+                from github_tracker.__main__ import main
+                main()
+            assert exc_info.value.code == 0
