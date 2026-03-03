@@ -1,8 +1,44 @@
-logs/
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
-.pytest_cache/
-.coverage
+# App config (contains personal settings and repo lists)
+.github-tracker.yaml
+
+# App state
 .github-tracker-state.json
+
+# Credentials and secrets
+.env
+.envrc
+*.pem
+*.key
+*.token
+*.secret
+*.credentials
+*_token
+*_secret
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

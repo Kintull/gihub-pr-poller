@@ -1573,43 +1573,49 @@ class TestHeaderRefreshInfo:
 class TestMain:
     def test_config_error(self):
         with patch("sys.argv", ["github-tracker"]):
-            with patch("github_tracker.__main__.setup_logging"):
-                with patch(
-                    "github_tracker.__main__.load_config",
-                    side_effect=__import__("github_tracker.config", fromlist=["ConfigError"]).ConfigError("bad config"),
-                ):
-                    with pytest.raises(SystemExit) as exc_info:
-                        from github_tracker.__main__ import main
-                        main()
-                    assert exc_info.value.code == 1
-
-    def test_auth_error(self):
-        with patch("sys.argv", ["github-tracker"]):
-            with patch("github_tracker.__main__.setup_logging"):
-                with patch("github_tracker.__main__.load_config", return_value=Config()):
+            with patch("github_tracker.__main__.DEFAULT_CONFIG_PATH") as mock_path:
+                mock_path.exists.return_value = True
+                with patch("github_tracker.__main__.setup_logging"):
                     with patch(
-                        "github_tracker.__main__.get_gh_token",
-                        side_effect=__import__(
-                            "github_tracker.github_client", fromlist=["GitHubAuthError"]
-                        ).GitHubAuthError("no auth"),
+                        "github_tracker.__main__.load_config",
+                        side_effect=__import__("github_tracker.config", fromlist=["ConfigError"]).ConfigError("bad config"),
                     ):
                         with pytest.raises(SystemExit) as exc_info:
                             from github_tracker.__main__ import main
                             main()
                         assert exc_info.value.code == 1
 
-    def test_success(self):
+    def test_auth_error(self):
         with patch("sys.argv", ["github-tracker"]):
-            with patch("github_tracker.__main__.setup_logging"):
-                with patch("github_tracker.__main__.load_config", return_value=Config()):
-                    with patch("github_tracker.__main__.get_gh_token", return_value="token"):
-                        with patch("github_tracker.__main__.GitHubClient") as mock_client_cls:
-                            with patch("github_tracker.__main__.GitHubTrackerApp") as mock_app_cls:
-                                mock_app_instance = MagicMock()
-                                mock_app_cls.return_value = mock_app_instance
+            with patch("github_tracker.__main__.DEFAULT_CONFIG_PATH") as mock_path:
+                mock_path.exists.return_value = True
+                with patch("github_tracker.__main__.setup_logging"):
+                    with patch("github_tracker.__main__.load_config", return_value=Config()):
+                        with patch(
+                            "github_tracker.__main__.get_gh_token",
+                            side_effect=__import__(
+                                "github_tracker.github_client", fromlist=["GitHubAuthError"]
+                            ).GitHubAuthError("no auth"),
+                        ):
+                            with pytest.raises(SystemExit) as exc_info:
                                 from github_tracker.__main__ import main
                                 main()
-                                mock_app_instance.run.assert_called_once()
+                            assert exc_info.value.code == 1
+
+    def test_success(self):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.DEFAULT_CONFIG_PATH") as mock_path:
+                mock_path.exists.return_value = True
+                with patch("github_tracker.__main__.setup_logging"):
+                    with patch("github_tracker.__main__.load_config", return_value=Config()):
+                        with patch("github_tracker.__main__.get_gh_token", return_value="token"):
+                            with patch("github_tracker.__main__.GitHubClient") as mock_client_cls:
+                                with patch("github_tracker.__main__.GitHubTrackerApp") as mock_app_cls:
+                                    mock_app_instance = MagicMock()
+                                    mock_app_cls.return_value = mock_app_instance
+                                    from github_tracker.__main__ import main
+                                    main()
+                                    mock_app_instance.run.assert_called_once()
 
     def test_version_flag(self):
         with patch("sys.argv", ["github-tracker", "--version"]):
@@ -1617,3 +1623,35 @@ class TestMain:
                 from github_tracker.__main__ import main
                 main()
             assert exc_info.value.code == 0
+
+    def test_wizard_launched_when_no_config(self):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.DEFAULT_CONFIG_PATH") as mock_path:
+                mock_path.exists.return_value = False
+                with patch("github_tracker.setup_wizard.SetupWizard") as mock_wizard_cls:
+                    mock_wizard = MagicMock()
+                    mock_wizard_cls.return_value = mock_wizard
+                    mock_wizard.run.return_value = True
+                    with patch("github_tracker.__main__.setup_logging"):
+                        with patch("github_tracker.__main__.load_config", return_value=Config()):
+                            with patch("github_tracker.__main__.get_gh_token", return_value="token"):
+                                with patch("github_tracker.__main__.GitHubClient"):
+                                    with patch("github_tracker.__main__.GitHubTrackerApp") as mock_app_cls:
+                                        mock_app_cls.return_value = MagicMock()
+                                        from github_tracker.__main__ import main
+                                        main()
+                                        mock_wizard.run.assert_called_once()
+
+    def test_wizard_cancelled_exits(self):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.DEFAULT_CONFIG_PATH") as mock_path:
+                mock_path.exists.return_value = False
+                with patch("github_tracker.setup_wizard.SetupWizard") as mock_wizard_cls:
+                    mock_wizard = MagicMock()
+                    mock_wizard_cls.return_value = mock_wizard
+                    mock_wizard.run.return_value = False
+                    with patch("github_tracker.__main__.setup_logging"):
+                        with pytest.raises(SystemExit) as exc_info:
+                            from github_tracker.__main__ import main
+                            main()
+                        assert exc_info.value.code == 0

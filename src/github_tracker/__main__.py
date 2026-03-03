@@ -8,7 +8,7 @@ import logging
 import sys
 
 from github_tracker.app import GitHubTrackerApp
-from github_tracker.config import ConfigError, load_config
+from github_tracker.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from github_tracker.github_client import GitHubAuthError, GitHubClient, get_gh_token
 from github_tracker.logging_config import setup_logging
 
@@ -23,6 +23,12 @@ def main() -> None:
     parser.parse_args()
 
     setup_logging()
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        from github_tracker.setup_wizard import SetupWizard
+        completed = SetupWizard().run()
+        if not completed:
+            sys.exit(0)
 
     logger.info("Starting GitHub PR Tracker")
 
