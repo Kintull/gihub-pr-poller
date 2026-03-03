@@ -10,6 +10,7 @@ from rich.text import Text
 from textual.widgets import DataTable
 
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest, acc_deploy_display, ci_display
+from github_tracker.theme import Color
 
 COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "\u2705", "CI", "ACC", "Jira")
 
@@ -70,10 +71,10 @@ class PRTable(DataTable):
     def _row_values(self, pr: PullRequest) -> tuple:
         """Build the cell values for a PR row."""
         is_author = PRLabel.AUTHOR in pr.labels
-        author_text: str | Text = Text(pr.author, style="#336699") if is_author else pr.author
+        author_text: str | Text = Text(pr.author, style=Color.BLUE) if is_author else pr.author
         title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
         has_interest = bool(pr.labels - {PRLabel.FAVOURITE})
-        number_text: str | Text = Text(str(pr.number), style="#ffcc66") if has_interest else str(pr.number)
+        number_text: str | Text = Text(str(pr.number), style=Color.YELLOW) if has_interest else str(pr.number)
         is_merged = pr.merged_at is not None
         if is_merged:
             comment_text = "\u2014"
@@ -84,11 +85,11 @@ class PRTable(DataTable):
             if pr.approval_count >= 2:
                 approval_text = "\u2705"
             elif is_author:
-                approval_text = Text(str(pr.approval_count), style="#336699")
+                approval_text = Text(str(pr.approval_count), style=Color.BLUE)
             elif pr.user_approved:
-                approval_text = Text(str(pr.approval_count), style="#339900")
+                approval_text = Text(str(pr.approval_count), style=Color.GREEN)
             else:
-                approval_text = Text(str(pr.approval_count), style="#ffcc66")
+                approval_text = Text(str(pr.approval_count), style=Color.YELLOW)
             if is_author:
                 unresolved = pr.unresolved_threads
                 has_threads = pr.total_threads > 0
@@ -98,9 +99,9 @@ class PRTable(DataTable):
             if not has_threads:
                 comment_text: str | Text = "\u2014"
             elif unresolved == 0:
-                comment_text = Text("\u2713", style="#339900")
+                comment_text = Text("\u2713", style=Color.GREEN)
             else:
-                comment_text = Text(str(unresolved), style="#ffcc66")
+                comment_text = Text(str(unresolved), style=Color.YELLOW)
         acc_text = acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps)
         jira_text = pr.jira_ticket or "\u2014"
         return (
@@ -147,7 +148,7 @@ class PRTable(DataTable):
         for i in range(6):
             if pr_number not in self._pr_index:
                 return
-            color = "#888888" if i % 2 == 0 else "default"
+            color = Color.DIM if i % 2 == 0 else "default"
             self.update_cell(row_key, "Title", Text(base_title, style=color))
             await asyncio.sleep(1 / 6)
         if pr_number not in self._pr_index:

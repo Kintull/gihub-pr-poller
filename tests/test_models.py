@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+from rich.text import Text
+
 from github_tracker.models import (
     ACC_DEPLOY_SYMBOLS,
     CI_SYMBOLS,
@@ -13,6 +15,7 @@ from github_tracker.models import (
     acc_deploy_display,
     ci_display,
 )
+from github_tracker.theme import Color
 
 
 class TestCIStatus:
@@ -59,16 +62,28 @@ class TestCIStatus:
 
 class TestCIDisplay:
     def test_pending(self):
-        assert ci_display(CIStatus.PENDING) == "⏳"
+        result = ci_display(CIStatus.PENDING)
+        assert isinstance(result, Text)
+        assert result.plain == "⏳"
+        assert result.style == Color.YELLOW
 
     def test_success(self):
-        assert ci_display(CIStatus.SUCCESS) == "🟢"
+        result = ci_display(CIStatus.SUCCESS)
+        assert isinstance(result, Text)
+        assert result.plain == "✓"
+        assert result.style == Color.GREEN
 
     def test_failure(self):
-        assert ci_display(CIStatus.FAILURE) == "❌"
+        result = ci_display(CIStatus.FAILURE)
+        assert isinstance(result, Text)
+        assert result.plain == "✗"
+        assert result.style == Color.RED
 
     def test_unknown(self):
-        assert ci_display(CIStatus.UNKNOWN) == "❓"
+        result = ci_display(CIStatus.UNKNOWN)
+        assert isinstance(result, Text)
+        assert result.plain == "?"
+        assert result.style == Color.RED
 
     def test_running_spinner_index_0(self):
         f = SPINNER_FRAMES[0]
@@ -117,7 +132,10 @@ class TestDeployStatus:
 
 class TestAccDeployDisplay:
     def test_deployed(self):
-        assert acc_deploy_display(DeployStatus.ACC_DEPLOYED) == "🟢"
+        result = acc_deploy_display(DeployStatus.ACC_DEPLOYED)
+        assert isinstance(result, Text)
+        assert result.plain == "✓"
+        assert result.style == Color.GREEN
 
     def test_none(self):
         assert acc_deploy_display(DeployStatus.NONE) == "\u2014"

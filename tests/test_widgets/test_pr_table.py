@@ -11,6 +11,7 @@ from textual.app import App, ComposeResult
 from rich.text import Text
 
 from github_tracker.models import CIStatus, DeployStatus, PRLabel
+from github_tracker.theme import Color
 from github_tracker.widgets.pr_table import COLUMNS, PRTable
 from tests.conftest import make_pr
 
@@ -216,7 +217,7 @@ class TestPRTable:
             assert values[2] == "alice"
             assert values[3] == "\u2014"  # no threads yet → em dash
             assert values[4] == "\u2705"
-            assert values[5] == "\U0001f7e2"
+            assert values[5] == Text("✓", style=Color.GREEN)
             assert values[6] == "\u2014"  # ACC = NONE → em dash
             assert values[7] == "PROJ-1"
 
@@ -254,9 +255,9 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr_author = make_pr(number=1, labels=frozenset({PRLabel.AUTHOR}),
                                 total_threads=3, unresolved_threads=0)
-            assert table._row_values(pr_author)[3] == Text("\u2713", style="#339900")
+            assert table._row_values(pr_author)[3] == Text("\u2713", style=Color.GREEN)
             pr_other = make_pr(number=2, my_commented_threads=2, my_unresolved_threads=0)
-            assert table._row_values(pr_other)[3] == Text("\u2713", style="#339900")
+            assert table._row_values(pr_other)[3] == Text("\u2713", style=Color.GREEN)
 
     @pytest.mark.asyncio
     async def test_row_values_threads_unresolved_yellow(self):
@@ -265,9 +266,9 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr_author = make_pr(number=1, labels=frozenset({PRLabel.AUTHOR}),
                                 total_threads=5, unresolved_threads=3)
-            assert table._row_values(pr_author)[3] == Text("3", style="#ffcc66")
+            assert table._row_values(pr_author)[3] == Text("3", style=Color.YELLOW)
             pr_other = make_pr(number=2, my_commented_threads=4, my_unresolved_threads=2)
-            assert table._row_values(pr_other)[3] == Text("2", style="#ffcc66")
+            assert table._row_values(pr_other)[3] == Text("2", style=Color.YELLOW)
 
     @pytest.mark.asyncio
     async def test_row_values_merged_pr(self):
@@ -287,7 +288,7 @@ class TestPRTable:
             assert values[3] == "\u2014"  # comments → dash
             assert values[4] == "\u2014"  # approvals → dash
             assert values[5] == "\u2014"  # CI → dash
-            assert values[6] == "\U0001f7e2"  # ACC → deployed green
+            assert values[6] == Text("✓", style=Color.GREEN)  # ACC → deployed
             assert values[0] == "10"
 
     @pytest.mark.asyncio
@@ -364,7 +365,7 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr = make_pr(number=1, approval_count=1, labels=frozenset({PRLabel.AUTHOR}))
             values = table._row_values(pr)
-            assert values[4] == Text("1", style="#336699")
+            assert values[4] == Text("1", style=Color.BLUE)
 
     @pytest.mark.asyncio
     async def test_row_values_author_column_blue_for_author(self):
@@ -373,7 +374,7 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr = make_pr(number=1, author="myuser", labels=frozenset({PRLabel.AUTHOR}))
             values = table._row_values(pr)
-            assert values[2] == Text("myuser", style="#336699")
+            assert values[2] == Text("myuser", style=Color.BLUE)
 
     @pytest.mark.asyncio
     async def test_row_values_author_column_plain_for_non_author(self):
@@ -391,7 +392,7 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr = make_pr(number=1, approval_count=1, user_approved=True)
             values = table._row_values(pr)
-            assert values[4] == Text("1", style="#339900")
+            assert values[4] == Text("1", style=Color.GREEN)
 
     @pytest.mark.asyncio
     async def test_row_values_approval_needs_review_yellow(self):
@@ -400,7 +401,7 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr = make_pr(number=1, approval_count=0, user_approved=False)
             values = table._row_values(pr)
-            assert values[4] == Text("0", style="#ffcc66")
+            assert values[4] == Text("0", style=Color.YELLOW)
 
     @pytest.mark.asyncio
     async def test_cursor_style_has_no_foreground_color(self):
@@ -447,7 +448,7 @@ class TestPRTable:
             for label in (PRLabel.AUTHOR, PRLabel.REVIEW_REQUESTED, PRLabel.MENTIONED, PRLabel.COMMENTED):
                 pr = make_pr(number=42, labels=frozenset({label}))
                 values = table._row_values(pr)
-                assert values[0] == Text("42", style="#ffcc66"), f"expected yellow # for {label}"
+                assert values[0] == Text("42", style=Color.YELLOW), f"expected yellow # for {label}"
 
     @pytest.mark.asyncio
     async def test_row_values_unrelated_pr_number_plain(self):
@@ -470,7 +471,7 @@ class TestPRTable:
                     await table.flash_title(1)
             assert mock_update.call_count == 7
             # Odd steps are grey, even steps are default
-            assert mock_update.call_args_list[0] == call("1", "Title", Text("Flash Me", style="#888888"))
+            assert mock_update.call_args_list[0] == call("1", "Title", Text("Flash Me", style=Color.DIM))
             assert mock_update.call_args_list[1] == call("1", "Title", Text("Flash Me", style="default"))
             # Final restore is plain string
             assert mock_update.call_args_list[6] == call("1", "Title", "Flash Me")

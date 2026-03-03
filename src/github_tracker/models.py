@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from rich.text import Text
+
+from github_tracker.theme import Color
+
 
 class CIStatus(Enum):
     """CI pipeline status."""
@@ -53,15 +57,15 @@ class PRLabel(Enum):
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-CI_SYMBOLS = {
-    CIStatus.PENDING: "⏳",
-    CIStatus.SUCCESS: "🟢",
-    CIStatus.FAILURE: "❌",
-    CIStatus.UNKNOWN: "❓",
+CI_SYMBOLS: dict[CIStatus, Text] = {
+    CIStatus.PENDING: Text("⏳", style=Color.YELLOW),
+    CIStatus.SUCCESS: Text("✓", style=Color.GREEN),
+    CIStatus.FAILURE: Text("✗", style=Color.RED),
+    CIStatus.UNKNOWN: Text("?", style=Color.RED),
 }
 
 
-def ci_display(status: CIStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str:
+def ci_display(status: CIStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str | Text:
     """Return display string for a CI status."""
     if status == CIStatus.RUNNING:
         frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
@@ -71,13 +75,13 @@ def ci_display(status: CIStatus, spinner_index: int = 0, completed: int = 0, tot
     return CI_SYMBOLS[status]
 
 
-ACC_DEPLOY_SYMBOLS = {
-    DeployStatus.ACC_DEPLOYED: "🟢",
+ACC_DEPLOY_SYMBOLS: dict[DeployStatus, str | Text] = {
+    DeployStatus.ACC_DEPLOYED: Text("✓", style=Color.GREEN),
     DeployStatus.NONE: "\u2014",
 }
 
 
-def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str:
+def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str | Text:
     """Return display string for a deploy status."""
     if status == DeployStatus.ACC_DEPLOYING:
         frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
