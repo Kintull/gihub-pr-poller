@@ -11,7 +11,7 @@ from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
 
 logger = logging.getLogger("github_tracker.state")
 
-STATE_FILE = Path.cwd() / ".github-tracker-state.json"
+STATE_FILE = Path.home() / ".github-tracker-state.json"
 CURRENT_VERSION = 3
 
 _REQUIRED_PR_KEYS = {"number", "title", "author", "url", "repo"}

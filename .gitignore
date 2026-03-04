@@ -1,7 +1,6 @@
-# App config (contains personal settings and repo lists)
-.github-tracker.yaml
-
-# App state
+# App config and state are stored in ~ (not in project dir)
+# but ignore them here too just in case
+.github-tracker-config.yaml
 .github-tracker-state.json
 
 # Credentials and secrets

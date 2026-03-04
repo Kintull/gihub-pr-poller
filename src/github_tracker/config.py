@@ -10,7 +10,7 @@ import yaml
 
 logger = logging.getLogger("github_tracker.config")
 
-DEFAULT_CONFIG_PATH = Path.cwd() / ".github-tracker.yaml"
+DEFAULT_CONFIG_PATH = Path.home() / ".github-tracker-config.yaml"
 
 DEFAULT_CONFIG = {
     "jira_base_url": "",
