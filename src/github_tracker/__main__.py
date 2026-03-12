@@ -59,7 +59,11 @@ def main() -> None:
     app = GitHubTrackerApp(config=config, github_client=client)
 
     logger.info("Launching TUI app")
-    app.run()
+    try:
+        app.run()
+    except Exception:
+        logger.exception("App crashed with unhandled exception")
+        raise
     logger.info("App exited")
 
 

@@ -1262,6 +1262,37 @@ class TestFavourite:
             mock_flash.assert_called_once_with(1)
 
     @pytest.mark.asyncio
+    async def test_unfavourite_merged_pr_moves_to_others(self):
+        """Unfavouriting a merged (ACC-deployed) PR moves it from My PRs to Others."""
+        from datetime import datetime, timezone as tz
+        merged_at = datetime(2024, 6, 15, 14, 0, 0, tzinfo=tz.utc)
+        merged_pr = make_pr(
+            number=99,
+            repo="owner/repo",
+            merged_at=merged_at,
+            acc_deploy=DeployStatus.ACC_DEPLOYED,
+            labels=frozenset({PRLabel.FAVOURITE}),
+        )
+        client = make_mock_client(raw_prs=[])
+        with patch("github_tracker.app.load_state", return_value=([], [merged_pr])):
+            app = GitHubTrackerApp(config=make_config(), github_client=client)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.app.workers.wait_for_complete()
+                await pilot.pause()
+                my_table = app.query_one("#my-pr-table", PRTable)
+                other_table = app.query_one("#other-pr-table", PRTable)
+                # Merged FAVOURITE PR should be in My PRs
+                assert any(p.number == 99 for p in my_table.pull_requests)
+                # Unfavourite it
+                my_table.focus()
+                await pilot.press("f")
+                await pilot.pause()
+                # PR should now be in Others, not My PRs
+                assert not any(p.number == 99 for p in my_table.pull_requests)
+                assert any(p.number == 99 for p in other_table.pull_requests)
+
+    @pytest.mark.asyncio
     async def test_favourite_no_table_focused_does_nothing(self):
         """action_favourite returns early when no table is focused."""
         client = make_mock_client(raw_prs=[])

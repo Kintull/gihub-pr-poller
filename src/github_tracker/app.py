@@ -308,8 +308,10 @@ class GitHubTrackerApp(App):
             self._merged_prs, self.config.acc_retention_days
         )
 
-        # Display combined open + merged
-        self._display_grouped_prs(all_prs + self._merged_prs)
+        # Display combined open + merged (deduplicate in case a merged PR reappears as open)
+        merged_keys = {(m.number, m.repo) for m in self._merged_prs}
+        deduped_open = [p for p in all_prs if (p.number, p.repo) not in merged_keys]
+        self._display_grouped_prs(deduped_open + self._merged_prs)
 
         header.status_text = f"{len(all_prs)} PRs — loading details..."
         logger.info("Displayed %d PRs, now loading details", len(all_prs))
@@ -381,7 +383,8 @@ class GitHubTrackerApp(App):
         # Collect all updated PRs from both tables (includes merged PRs)
         final_prs = list(my_table.pull_requests) + list(other_table.pull_requests)
         # Separate open from merged for saving
-        final_open = [p for p in final_prs if p.merged_at is None]
+        merged_keys = {(m.number, m.repo) for m in self._merged_prs}
+        final_open = [p for p in final_prs if p.merged_at is None and (p.number, p.repo) not in merged_keys]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
         self._display_grouped_prs(final_open + self._merged_prs)
 
@@ -519,9 +522,10 @@ class GitHubTrackerApp(App):
         """Re-group all PRs into my/other tables and persist state."""
         my_table = self.query_one("#my-pr-table", PRTable)
         other_table = self.query_one("#other-pr-table", PRTable)
+        merged_keys = {(m.number, m.repo) for m in self._merged_prs}
         final_open = [
             p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
-            if p.merged_at is None
+            if p.merged_at is None and (p.number, p.repo) not in merged_keys
         ]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
         self._display_grouped_prs(final_open + self._merged_prs)
@@ -705,6 +709,11 @@ class GitHubTrackerApp(App):
             self.notify(f"Favourited #{pr.number}")
         updated_pr = replace(pr, labels=new_labels)
         self._update_pr_in_tables(updated_pr)
+        # Also update _merged_prs so merged PRs (e.g. deployed to ACC) move correctly
+        self._merged_prs = [
+            updated_pr if p.number == pr.number and p.repo == pr.repo else p
+            for p in self._merged_prs
+        ]
         my_table = self.query_one("#my-pr-table", PRTable)
         other_table = self.query_one("#other-pr-table", PRTable)
         final_open = [
