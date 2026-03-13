@@ -716,9 +716,10 @@ class GitHubTrackerApp(App):
         ]
         my_table = self.query_one("#my-pr-table", PRTable)
         other_table = self.query_one("#other-pr-table", PRTable)
+        merged_keys = {(m.number, m.repo) for m in self._merged_prs}
         final_open = [
             p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
-            if p.merged_at is None
+            if p.merged_at is None and (p.number, p.repo) not in merged_keys
         ]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
         self._display_grouped_prs(final_open + self._merged_prs, preserve_focus=True)
