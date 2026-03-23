@@ -133,7 +133,7 @@ def compute_deploy_status(
     if pr.merge_commit_sha is None:
         return DeployStatus.ACC_DEPLOYING
 
-    if compare_status in ("behind", "identical"):
+    if compare_status in ("ahead", "identical"):
         if deploy_created_at is not None:
             now = datetime.now(tz=timezone.utc)
             created = deploy_created_at if deploy_created_at.tzinfo else deploy_created_at.replace(tzinfo=timezone.utc)

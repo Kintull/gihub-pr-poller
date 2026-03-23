@@ -264,14 +264,14 @@ class TestComputeDeployStatus:
         )
         assert compute_deploy_status(pr, "behind", None, 20) == DeployStatus.ACC_DEPLOYING
 
-    def test_behind_past_cooldown_returns_deployed(self):
+    def test_ahead_past_cooldown_returns_deployed(self):
         now = datetime.now(tz=timezone.utc)
         pr = make_pr(
             merged_at=now - timedelta(hours=2),
             merge_commit_sha="abc123",
         )
         deploy_created = now - timedelta(hours=1)
-        assert compute_deploy_status(pr, "behind", deploy_created, 20) == DeployStatus.ACC_DEPLOYED
+        assert compute_deploy_status(pr, "ahead", deploy_created, 20) == DeployStatus.ACC_DEPLOYED
 
     def test_identical_past_cooldown_returns_deployed(self):
         now = datetime.now(tz=timezone.utc)
@@ -282,14 +282,14 @@ class TestComputeDeployStatus:
         deploy_created = now - timedelta(hours=1)
         assert compute_deploy_status(pr, "identical", deploy_created, 20) == DeployStatus.ACC_DEPLOYED
 
-    def test_behind_within_cooldown_returns_acc_argo(self):
+    def test_ahead_within_cooldown_returns_acc_argo(self):
         now = datetime.now(tz=timezone.utc)
         pr = make_pr(
             merged_at=now - timedelta(hours=1),
             merge_commit_sha="abc123",
         )
         deploy_created = now - timedelta(minutes=5)  # within 20min cooldown
-        assert compute_deploy_status(pr, "behind", deploy_created, 20) == DeployStatus.ACC_ARGO
+        assert compute_deploy_status(pr, "ahead", deploy_created, 20) == DeployStatus.ACC_ARGO
 
     def test_identical_within_cooldown_returns_acc_argo(self):
         now = datetime.now(tz=timezone.utc)
@@ -300,13 +300,13 @@ class TestComputeDeployStatus:
         deploy_created = now - timedelta(minutes=5)
         assert compute_deploy_status(pr, "identical", deploy_created, 20) == DeployStatus.ACC_ARGO
 
-    def test_ahead_returns_deploying(self):
+    def test_behind_returns_deploying(self):
         now = datetime.now(tz=timezone.utc)
         pr = make_pr(
             merged_at=now - timedelta(hours=1),
             merge_commit_sha="abc123",
         )
-        assert compute_deploy_status(pr, "ahead", now - timedelta(hours=1), 20) == DeployStatus.ACC_DEPLOYING
+        assert compute_deploy_status(pr, "behind", now - timedelta(hours=1), 20) == DeployStatus.ACC_DEPLOYING
 
     def test_diverged_returns_deploying(self):
         now = datetime.now(tz=timezone.utc)
@@ -331,15 +331,15 @@ class TestComputeDeployStatus:
             merge_commit_sha="abc123",
         )
         deploy_created = now - timedelta(seconds=5)
-        assert compute_deploy_status(pr, "behind", deploy_created, 0) == DeployStatus.ACC_DEPLOYED
+        assert compute_deploy_status(pr, "ahead", deploy_created, 0) == DeployStatus.ACC_DEPLOYED
 
-    def test_behind_no_deploy_created_at_returns_deployed(self):
+    def test_ahead_no_deploy_created_at_returns_deployed(self):
         now = datetime.now(tz=timezone.utc)
         pr = make_pr(
             merged_at=now - timedelta(hours=1),
             merge_commit_sha="abc123",
         )
-        assert compute_deploy_status(pr, "behind", None, 20) == DeployStatus.ACC_DEPLOYED
+        assert compute_deploy_status(pr, "ahead", None, 20) == DeployStatus.ACC_DEPLOYED
 
 
 class TestComputeUserApproved:

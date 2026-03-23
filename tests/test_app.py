@@ -588,7 +588,7 @@ class TestMergeDetection:
         client = make_mock_client(raw_prs=[])
         deploy_created = datetime(2024, 6, 15, 13, 0, 0, tzinfo=tz.utc)
         client.fetch_latest_deployment_sha = AsyncMock(return_value=("deploy_sha_456", deploy_created))
-        client.compare_commits = AsyncMock(return_value="behind")
+        client.compare_commits = AsyncMock(return_value="ahead")
         with patch("github_tracker.app.load_state", return_value=([], merged)):
             with patch("github_tracker.app.save_state"):
                 app = GitHubTrackerApp(config=make_config(), github_client=client)
@@ -763,7 +763,7 @@ class TestRefreshFocusedPrs:
                     # Now deployment is found and PR commit is behind
                     deploy_created = now - timedelta(hours=1)  # past cooldown
                     client.fetch_latest_deployment_sha.return_value = ("deploy_sha", deploy_created)
-                    client.compare_commits.return_value = "behind"
+                    client.compare_commits.return_value = "ahead"
                     await pilot.press("r")
                     await pilot.pause()
                     await pilot.app.workers.wait_for_complete()
@@ -903,7 +903,7 @@ class TestRefreshFocusedPrs:
         client = make_mock_client(raw_prs=[])
         deploy_created = now - timedelta(minutes=5)  # within cooldown
         client.fetch_latest_deployment_sha = AsyncMock(return_value=("deploy_sha", deploy_created))
-        client.compare_commits = AsyncMock(return_value="behind")
+        client.compare_commits = AsyncMock(return_value="ahead")
         with patch("github_tracker.app.load_state", return_value=([], merged)):
             with patch("github_tracker.app.save_state"):
                 app = GitHubTrackerApp(config=make_config(), github_client=client)

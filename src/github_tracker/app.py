@@ -294,6 +294,18 @@ class GitHubTrackerApp(App):
                 except Exception as e:
                     logger.error("Error checking merge status for PR #%d: %s", prev_pr.number, e)
 
+        # Backfill merge_commit_sha for merged PRs missing it (pre-migration)
+        for i, mpr in enumerate(self._merged_prs):
+            if mpr.merge_commit_sha is None and mpr.acc_deploy != DeployStatus.ACC_DEPLOYED:
+                try:
+                    detail = await self.github_client.fetch_pr_detail(mpr.repo, mpr.number)
+                    sha = detail.get("merge_commit_sha")
+                    if sha:
+                        self._merged_prs[i] = replace(mpr, merge_commit_sha=sha)
+                        logger.info("Backfilled merge_commit_sha for PR #%d", mpr.number)
+                except Exception as e:
+                    logger.error("Error backfilling merge_commit_sha for PR #%d: %s", mpr.number, e)
+
         # Check deployment status for repos with merged PRs
         prs_to_check = [
             (i, mpr) for i, mpr in enumerate(self._merged_prs)
@@ -574,6 +586,25 @@ class GitHubTrackerApp(App):
         await self._do_refresh_open_prs(open_prs)
 
         if merged_prs_in_table:
+            # Backfill merge_commit_sha for merged PRs missing it (pre-migration)
+            for mpr in merged_prs_in_table:
+                if mpr.merge_commit_sha is None and mpr.acc_deploy != DeployStatus.ACC_DEPLOYED:
+                    try:
+                        detail = await self.github_client.fetch_pr_detail(mpr.repo, mpr.number)
+                        sha = detail.get("merge_commit_sha")
+                        if sha:
+                            updated = replace(mpr, merge_commit_sha=sha)
+                            self._update_pr_in_tables(updated)
+                            for j, m in enumerate(self._merged_prs):
+                                if m.number == mpr.number and m.repo == mpr.repo:
+                                    self._merged_prs[j] = updated
+                                    break
+                            logger.info("Backfilled merge_commit_sha for PR #%d", mpr.number)
+                    except Exception as e:
+                        logger.error("Error backfilling merge_commit_sha for PR #%d: %s", mpr.number, e)
+
+            # Re-read merged PRs from table after backfill
+            merged_prs_in_table = [pr for pr in table.pull_requests if pr.merged_at is not None]
             prs_to_check = [
                 mpr for mpr in merged_prs_in_table
                 if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
