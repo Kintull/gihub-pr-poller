@@ -10,8 +10,8 @@ from github_tracker.widgets.header import (
     LOGO_HEIGHT,
     LOGO_LINES,
     LOGO_WIDTH,
-    VERSION,
     TrackerHeader,
+    _get_version,
     build_banner,
 )
 
@@ -34,11 +34,29 @@ class TestBuildBanner:
             status="5 PRs",
         )
         assert "GitHub PR Tracker" in banner
-        assert VERSION in banner
+        assert _get_version() in banner
         assert "owner/repo1" in banner
         assert "owner/repo2" in banner
         assert "jira.example.com" in banner
         assert "5 PRs" in banner
+
+    def test_update_hint_shown(self):
+        banner = build_banner(
+            repos=["o/r"],
+            jira_base_url="",
+            status="",
+            update_hint="(v0.3.0 update available)",
+        )
+        assert "(v0.3.0 update available)" in banner
+
+    def test_update_hint_empty(self):
+        banner = build_banner(
+            repos=["o/r"],
+            jira_base_url="",
+            status="",
+            update_hint="",
+        )
+        assert "update available" not in banner
 
     def test_no_repos(self):
         banner = build_banner(repos=[], jira_base_url="", status="")
@@ -145,3 +163,11 @@ class TestTrackerHeader:
             await pilot.pause()
             # Should not raise
             header._rebuild_banner()
+
+    @pytest.mark.asyncio
+    async def test_set_update_hint(self):
+        async with HeaderTestApp(repos=["o/r"]).run_test() as pilot:
+            header = pilot.app.query_one(TrackerHeader)
+            header.set_update_hint("(v1.0.0 update available)")
+            await pilot.pause()
+            assert header.update_hint == "(v1.0.0 update available)"

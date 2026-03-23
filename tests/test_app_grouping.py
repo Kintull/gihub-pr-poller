@@ -23,7 +23,9 @@ def make_mock_client(raw_prs: list[dict] | None = None) -> GitHubClient:
     client.fetch_reviews = AsyncMock(return_value=[])
     client.fetch_check_runs = AsyncMock(return_value=[])
     client.fetch_pr_detail = AsyncMock(return_value={"comments": 0, "review_comments": 0})
-    client.fetch_workflow_runs = AsyncMock(return_value=[])
+    client.fetch_latest_deployment_sha = AsyncMock(return_value=(None, None))
+    client.compare_commits = AsyncMock(return_value=None)
+    client.fetch_latest_version = AsyncMock(return_value=None)
     return client
 
 

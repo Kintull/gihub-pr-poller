@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-VERSION = "0.1.0"
+
+def _get_version() -> str:
+    try:
+        return importlib.metadata.version("github-tracker")
+    except importlib.metadata.PackageNotFoundError:
+        return "0.0.0"
 
 LOGO = """\
   ╭──○
@@ -26,9 +32,13 @@ def build_banner(
     jira_base_url: str,
     status: str,
     refresh_info: str = "",
+    version: str = "",
+    update_hint: str = "",
 ) -> str:
     """Build the full banner string with logo on the left and info on the right."""
-    title = f"GitHub PR Tracker v{VERSION}"
+    title = f"GitHub PR Tracker v{version or _get_version()}"
+    if update_hint:
+        title += f" {update_hint}"
 
     if repos:
         repos_label = "Watching"
@@ -92,6 +102,7 @@ class TrackerHeader(Widget):
     repo_name: reactive[str] = reactive("", layout=True)
     jira_url: reactive[str] = reactive("", layout=True)
     status_text: reactive[str] = reactive("", layout=True)
+    update_hint: reactive[str] = reactive("", layout=True)
 
     def __init__(
         self,
@@ -119,7 +130,14 @@ class TrackerHeader(Widget):
         self.jira_url = jira_base_url
         self._rebuild_banner()
 
+    def set_update_hint(self, text: str) -> None:
+        """Set the update hint text shown next to the version."""
+        self.update_hint = text
+
     def watch_status_text(self, value: str) -> None:
+        self._rebuild_banner()
+
+    def watch_update_hint(self, value: str) -> None:
         self._rebuild_banner()
 
     def _rebuild_banner(self) -> None:
@@ -132,5 +150,6 @@ class TrackerHeader(Widget):
             jira_base_url=self._jira_base_url,
             status=self.status_text,
             refresh_info=self._refresh_info,
+            update_hint=self.update_hint,
         )
         content.update(banner)

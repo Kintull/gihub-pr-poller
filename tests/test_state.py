@@ -164,6 +164,12 @@ class TestValidateState:
         assert len(open_prs) == 1
         assert merged_prs == []
 
+    def test_v3_backward_compat(self):
+        state = _make_state([_make_pr_dict()], version=3)
+        open_prs, merged_prs = _validate_state(state)
+        assert len(open_prs) == 1
+        assert merged_prs == []
+
     def test_skips_invalid_merged_entries(self):
         state = _make_state([_make_pr_dict()])
         state["merged_prs"] = [_make_pr_dict(number=10, merged_at="2024-06-15T14:00:00+00:00", acc_deploy="acc_deploying"), "not a dict"]
@@ -328,6 +334,20 @@ class TestMergedPrToDict:
         assert d["merged_at"] == merged_at.isoformat()
         assert d["acc_deploy"] == "acc_deploying"
 
+    def test_includes_merge_commit_sha(self):
+        pr = make_pr(
+            number=42,
+            merged_at=datetime(2024, 6, 15, 14, 0, 0, tzinfo=timezone.utc),
+            merge_commit_sha="abc123def456",
+        )
+        d = _merged_pr_to_dict(pr)
+        assert d["merge_commit_sha"] == "abc123def456"
+
+    def test_none_merge_commit_sha(self):
+        pr = make_pr(merged_at=None)
+        d = _merged_pr_to_dict(pr)
+        assert d["merge_commit_sha"] is None
+
     def test_none_merged_at(self):
         pr = make_pr(merged_at=None)
         d = _merged_pr_to_dict(pr)
@@ -374,6 +394,30 @@ class TestDictToMergedPr:
         pr = _dict_to_merged_pr(d)
         assert pr is not None
         assert pr.acc_deploy == DeployStatus.NONE
+
+    def test_acc_argo_migrated_to_deploying(self):
+        d = _make_pr_dict(
+            merged_at="2024-06-15T14:00:00+00:00",
+            acc_deploy="acc_argo",
+        )
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.acc_deploy == DeployStatus.ACC_DEPLOYING
+
+    def test_merge_commit_sha_deserialized(self):
+        d = _make_pr_dict(
+            merged_at="2024-06-15T14:00:00+00:00",
+            merge_commit_sha="abc123def456",
+        )
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.merge_commit_sha == "abc123def456"
+
+    def test_missing_merge_commit_sha(self):
+        d = _make_pr_dict(merged_at="2024-06-15T14:00:00+00:00")
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.merge_commit_sha is None
 
     def test_invalid_base_dict(self):
         assert _dict_to_merged_pr("not a dict") is None
@@ -424,6 +468,7 @@ class TestRoundTrip:
                 number=2,
                 merged_at=merged_at,
                 acc_deploy=DeployStatus.ACC_DEPLOYING,
+                merge_commit_sha="abc123def",
             ),
         ]
         save_state(open_prs, merged_prs, path=path)
@@ -433,3 +478,4 @@ class TestRoundTrip:
         assert loaded_merged[0].number == 2
         assert loaded_merged[0].merged_at == merged_at
         assert loaded_merged[0].acc_deploy == DeployStatus.ACC_DEPLOYING
+        assert loaded_merged[0].merge_commit_sha == "abc123def"

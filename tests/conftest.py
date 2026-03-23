@@ -31,6 +31,7 @@ def make_pr(**overrides) -> PullRequest:
         "ci_total_steps": 0,
         "acc_completed_steps": 0,
         "acc_total_steps": 0,
+        "merge_commit_sha": None,
         "user_approved": False,
         "total_threads": 0,
         "unresolved_threads": 0,
@@ -71,23 +72,6 @@ def make_check_run_response(
     return {"status": status, "conclusion": conclusion, "name": "CI"}
 
 
-def make_workflow_run_response(
-    status: str = "completed",
-    conclusion: str | None = "success",
-    created_at: str = "2024-06-15T13:00:00Z",
-    updated_at: str = "2024-06-15T13:10:00Z",
-    id: int = 12345,
-) -> dict:
-    """Factory for creating GitHub workflow run response dicts."""
-    return {
-        "id": id,
-        "status": status,
-        "conclusion": conclusion,
-        "created_at": created_at,
-        "updated_at": updated_at,
-    }
-
-
 def make_review_thread(is_resolved: bool = False, authors: list[str] | None = None) -> dict:
     """Factory for creating a GraphQL review thread node."""
     return {
@@ -101,16 +85,6 @@ def make_review_thread(is_resolved: bool = False, authors: list[str] | None = No
 def make_review_threads_response(threads: list[dict]) -> dict:
     """Factory for a GraphQL reviewThreads response."""
     return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
-
-
-def make_workflow_run_jobs_response(jobs: list[dict] | None = None) -> dict:
-    """Factory for creating GitHub workflow run jobs response dicts."""
-    if jobs is None:
-        jobs = [
-            {"status": "completed", "name": "build"},
-            {"status": "in_progress", "name": "test"},
-        ]
-    return {"jobs": jobs}
 
 
 @pytest.fixture

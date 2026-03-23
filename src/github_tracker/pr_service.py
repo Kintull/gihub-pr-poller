@@ -120,66 +120,28 @@ def compute_ci_progress(check_runs: list[dict]) -> tuple[int, int]:
     return completed, total
 
 
-def compute_acc_deploy(
+def compute_deploy_status(
     pr: PullRequest,
-    workflow_runs: list[dict],
-    cooldown_minutes: int,
-    jobs_by_run_id: dict[int, list[dict]] | None = None,
-) -> tuple[DeployStatus, int, int]:
-    """Compute ACC deploy status for a merged PR based on workflow runs.
-
-    Returns (status, completed_steps, total_steps).
-    """
+    compare_status: str | None,
+    deploy_created_at: datetime | None,
+    argo_cooldown_minutes: int,
+) -> DeployStatus:
+    """Compute deploy status from Deployments API comparison result."""
     if pr.merged_at is None:
-        return DeployStatus.NONE, 0, 0
+        return DeployStatus.NONE
 
-    now = datetime.now(tz=timezone.utc)
-    merged_at = pr.merged_at if pr.merged_at.tzinfo else pr.merged_at.replace(tzinfo=timezone.utc)
+    if pr.merge_commit_sha is None:
+        return DeployStatus.ACC_DEPLOYING
 
-    for run in workflow_runs:
-        run_created_str = run.get("created_at", "")
-        try:
-            run_created = datetime.fromisoformat(run_created_str.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            continue
+    if compare_status in ("behind", "identical"):
+        if deploy_created_at is not None:
+            now = datetime.now(tz=timezone.utc)
+            created = deploy_created_at if deploy_created_at.tzinfo else deploy_created_at.replace(tzinfo=timezone.utc)
+            if now < created + timedelta(minutes=argo_cooldown_minutes):
+                return DeployStatus.ACC_ARGO
+        return DeployStatus.ACC_DEPLOYED
 
-        if run_created < merged_at:
-            continue
-
-        status = run.get("status", "")
-        conclusion = run.get("conclusion")
-
-        if status in ("queued", "in_progress"):
-            completed, total = 0, 0
-            if jobs_by_run_id is not None:
-                run_id = run.get("id")
-                if run_id is not None:
-                    jobs = jobs_by_run_id.get(run_id, [])
-                    completed = sum(1 for j in jobs if j.get("status") == "completed")
-                    total = len(jobs)
-            return DeployStatus.ACC_DEPLOYING, completed, total
-
-        if status == "completed" and conclusion == "success":
-            run_completed_str = run.get("updated_at", "")
-            try:
-                run_completed = datetime.fromisoformat(run_completed_str.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                return DeployStatus.ACC_DEPLOYING, 0, 0
-            if now >= run_completed + timedelta(minutes=cooldown_minutes):
-                return DeployStatus.ACC_DEPLOYED, 0, 0
-            return DeployStatus.ACC_ARGO, 0, 0
-
-        # completed + skipped: workflow triggered but all jobs were conditionally skipped
-        # (e.g. waiting for image build to finish). Not a real deploy attempt — keep looking.
-        if status == "completed" and conclusion == "skipped":
-            continue
-
-        # completed + other non-success (failure, cancelled, etc.): waiting for retry
-        if status == "completed":
-            return DeployStatus.ACC_DEPLOYING, 0, 0
-
-    # No relevant runs found — pipeline hasn't started yet
-    return DeployStatus.ACC_DEPLOYING, 0, 0
+    return DeployStatus.ACC_DEPLOYING
 
 
 def filter_expired_merged_prs(

@@ -23,8 +23,6 @@ from tests.conftest import (
     make_check_run_response,
     make_github_pr_response,
     make_review_response,
-    make_workflow_run_jobs_response,
-    make_workflow_run_response,
 )
 
 
@@ -299,7 +297,7 @@ class TestGitHubClient:
         assert prs[0].jira_url is None
 
 
-class TestFetchWorkflowRuns:
+class TestFetchLatestDeploymentSha:
     @pytest.fixture
     def client(self):
         return GitHubClient(token="test-token")
@@ -307,113 +305,149 @@ class TestFetchWorkflowRuns:
     @respx.mock
     @pytest.mark.asyncio
     async def test_success(self, client):
-        workflows = {
-            "workflows": [
-                {"id": 123, "name": "Reisbalans deploy to cloud acceptance"},
-                {"id": 456, "name": "Other workflow"},
-            ]
-        }
-        runs = {
-            "workflow_runs": [
-                make_workflow_run_response(status="completed", conclusion="success"),
-            ]
-        }
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/workflows").mock(
-            return_value=httpx.Response(200, json=workflows)
-        )
+        deployments = [
+            {"id": 100, "sha": "abc123", "created_at": "2024-06-15T13:00:00Z"},
+        ]
+        statuses = [{"state": "success"}]
         respx.get(
-            f"{GITHUB_API}/repos/owner/repo/actions/workflows/123/runs?branch=master&per_page=5"
-        ).mock(return_value=httpx.Response(200, json=runs))
-        result = await client.fetch_workflow_runs(
-            "owner/repo", "Reisbalans deploy to cloud acceptance"
-        )
-        assert len(result) == 1
-        assert result[0]["status"] == "completed"
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_workflow_not_found(self, client):
-        workflows = {"workflows": [{"id": 456, "name": "Other workflow"}]}
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/workflows").mock(
-            return_value=httpx.Response(200, json=workflows)
-        )
-        result = await client.fetch_workflow_runs("owner/repo", "nonexistent")
-        assert result == []
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_workflows_not_a_dict(self, client):
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/workflows").mock(
-            return_value=httpx.Response(200, json=[])
-        )
-        result = await client.fetch_workflow_runs("owner/repo", "test")
-        assert result == []
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_runs_not_a_dict(self, client):
-        workflows = {
-            "workflows": [{"id": 123, "name": "test"}]
-        }
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/workflows").mock(
-            return_value=httpx.Response(200, json=workflows)
-        )
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
         respx.get(
-            f"{GITHUB_API}/repos/owner/repo/actions/workflows/123/runs?branch=master&per_page=5"
+            f"{GITHUB_API}/repos/owner/repo/deployments/100/statuses"
+        ).mock(return_value=httpx.Response(200, json=statuses))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha == "abc123"
+        assert created_at is not None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_no_successful_deployment(self, client):
+        deployments = [
+            {"id": 100, "sha": "abc123", "created_at": "2024-06-15T13:00:00Z"},
+        ]
+        statuses = [{"state": "failure"}]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments/100/statuses"
+        ).mock(return_value=httpx.Response(200, json=statuses))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+        assert created_at is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_empty_deployments(self, client):
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
         ).mock(return_value=httpx.Response(200, json=[]))
-        result = await client.fetch_workflow_runs("owner/repo", "test")
-        assert result == []
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+        assert created_at is None
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_custom_branch_and_per_page(self, client):
-        workflows = {"workflows": [{"id": 123, "name": "test"}]}
-        runs = {"workflow_runs": []}
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/workflows").mock(
-            return_value=httpx.Response(200, json=workflows)
-        )
+    async def test_api_error_returns_none(self, client):
         respx.get(
-            f"{GITHUB_API}/repos/owner/repo/actions/workflows/123/runs?branch=main&per_page=10"
-        ).mock(return_value=httpx.Response(200, json=runs))
-        result = await client.fetch_workflow_runs(
-            "owner/repo", "test", branch="main", per_page=10
-        )
-        assert result == []
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(404, json={"message": "Not Found"}))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+        assert created_at is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_not_a_list_returns_none(self, client):
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json={"message": "error"}))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+        assert created_at is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_skips_deployment_with_no_id(self, client):
+        deployments = [
+            {"sha": "abc123", "created_at": "2024-06-15T13:00:00Z"},  # no id
+        ]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_second_deployment_success(self, client):
+        """First deployment has no success status, second does."""
+        deployments = [
+            {"id": 100, "sha": "first", "created_at": "2024-06-15T14:00:00Z"},
+            {"id": 101, "sha": "second", "created_at": "2024-06-15T13:00:00Z"},
+        ]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments/100/statuses"
+        ).mock(return_value=httpx.Response(200, json=[{"state": "pending"}]))
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments/101/statuses"
+        ).mock(return_value=httpx.Response(200, json=[{"state": "success"}]))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha == "second"
 
 
-class TestFetchWorkflowRunJobs:
+class TestCompareCommits:
     @pytest.fixture
     def client(self):
         return GitHubClient(token="test-token")
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_success(self, client):
-        jobs_data = make_workflow_run_jobs_response()
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/runs/42/jobs").mock(
-            return_value=httpx.Response(200, json=jobs_data)
+    async def test_behind(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/compare/abc...def").mock(
+            return_value=httpx.Response(200, json={"status": "behind"})
         )
-        result = await client.fetch_workflow_run_jobs("owner/repo", 42)
-        assert len(result) == 2
-        assert result[0]["name"] == "build"
+        result = await client.compare_commits("owner/repo", "abc", "def")
+        assert result == "behind"
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_not_a_dict_returns_empty(self, client):
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/runs/42/jobs").mock(
+    async def test_identical(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/compare/abc...abc").mock(
+            return_value=httpx.Response(200, json={"status": "identical"})
+        )
+        result = await client.compare_commits("owner/repo", "abc", "abc")
+        assert result == "identical"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_ahead(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/compare/abc...def").mock(
+            return_value=httpx.Response(200, json={"status": "ahead"})
+        )
+        result = await client.compare_commits("owner/repo", "abc", "def")
+        assert result == "ahead"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_api_error_returns_none(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/compare/abc...def").mock(
+            return_value=httpx.Response(404, json={"message": "Not Found"})
+        )
+        result = await client.compare_commits("owner/repo", "abc", "def")
+        assert result is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_not_a_dict_returns_none(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/compare/abc...def").mock(
             return_value=httpx.Response(200, json=[])
         )
-        result = await client.fetch_workflow_run_jobs("owner/repo", 42)
-        assert result == []
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_empty_jobs_list(self, client):
-        respx.get(f"{GITHUB_API}/repos/owner/repo/actions/runs/99/jobs").mock(
-            return_value=httpx.Response(200, json={"jobs": []})
-        )
-        result = await client.fetch_workflow_run_jobs("owner/repo", 99)
-        assert result == []
+        result = await client.compare_commits("owner/repo", "abc", "def")
+        assert result is None
 
 
 class TestParsePrBasic:

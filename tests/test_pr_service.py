@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 from github_tracker.models import DeployStatus, PRLabel
 from github_tracker.pr_service import (
-    compute_acc_deploy,
     compute_ci_progress,
+    compute_deploy_status,
     compute_phase1_labels,
     compute_phase2_labels,
     compute_thread_counts,
@@ -15,7 +15,7 @@ from github_tracker.pr_service import (
     filter_expired_merged_prs,
     group_prs,
 )
-from tests.conftest import make_pr, make_review_thread, make_workflow_run_response
+from tests.conftest import make_pr, make_review_thread
 
 
 class TestComputePhase1Labels:
@@ -252,196 +252,94 @@ class TestComputeCiProgress:
         assert compute_ci_progress(runs) == (0, 2)
 
 
-class TestComputeAccDeploy:
+class TestComputeDeployStatus:
     def test_no_merged_at_returns_none(self):
-        pr = make_pr(merged_at=None)
-        assert compute_acc_deploy(pr, [], 20) == (DeployStatus.NONE, 0, 0)
+        pr = make_pr(merged_at=None, merge_commit_sha="abc123")
+        assert compute_deploy_status(pr, "behind", None, 20) == DeployStatus.NONE
 
-    def test_no_runs_returns_deploying(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        assert compute_acc_deploy(pr, [], 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
+    def test_no_merge_commit_sha_returns_deploying(self):
+        pr = make_pr(
+            merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+            merge_commit_sha=None,
+        )
+        assert compute_deploy_status(pr, "behind", None, 20) == DeployStatus.ACC_DEPLOYING
 
-    def test_run_in_progress_returns_deploying(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        runs = [make_workflow_run_response(
-            status="in_progress",
-            conclusion=None,
-            created_at="2024-06-15T12:30:00Z",
-        )]
-        status, completed, total = compute_acc_deploy(pr, runs, 20)
-        assert status == DeployStatus.ACC_DEPLOYING
-        assert completed == 0
-        assert total == 0
-
-    def test_run_queued_returns_deploying(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        runs = [make_workflow_run_response(
-            status="queued",
-            conclusion=None,
-            created_at="2024-06-15T12:30:00Z",
-        )]
-        status, completed, total = compute_acc_deploy(pr, runs, 20)
-        assert status == DeployStatus.ACC_DEPLOYING
-
-    def test_completed_success_within_cooldown_returns_acc_argo(self):
+    def test_behind_past_cooldown_returns_deployed(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(merged_at=now - timedelta(hours=1))
-        runs = [make_workflow_run_response(
-            status="completed",
-            conclusion="success",
-            created_at=(now - timedelta(minutes=30)).isoformat(),
-            updated_at=(now - timedelta(minutes=5)).isoformat(),  # within 20min cooldown
-        )]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_ARGO, 0, 0)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=2),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(hours=1)
+        assert compute_deploy_status(pr, "behind", deploy_created, 20) == DeployStatus.ACC_DEPLOYED
 
-    def test_completed_success_past_cooldown_returns_deployed(self):
+    def test_identical_past_cooldown_returns_deployed(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(merged_at=now - timedelta(hours=2))
-        runs = [make_workflow_run_response(
-            status="completed",
-            conclusion="success",
-            created_at=(now - timedelta(hours=1, minutes=30)).isoformat(),
-            updated_at=(now - timedelta(hours=1)).isoformat(),  # well past 20min cooldown
-        )]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYED, 0, 0)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=2),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(hours=1)
+        assert compute_deploy_status(pr, "identical", deploy_created, 20) == DeployStatus.ACC_DEPLOYED
 
-    def test_completed_failure_returns_deploying(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        runs = [make_workflow_run_response(
-            status="completed",
-            conclusion="failure",
-            created_at="2024-06-15T12:30:00Z",
-        )]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
-
-    def test_completed_skipped_is_ignored_keeps_looking(self):
-        """completed/skipped runs (all jobs skipped due to unmet conditions) are ignored,
-        not treated as a failed deploy attempt."""
+    def test_behind_within_cooldown_returns_acc_argo(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(merged_at=now - timedelta(hours=1))
-        # Two skipped runs after merge, then nothing relevant → still deploying
-        runs = [
-            make_workflow_run_response(
-                status="completed",
-                conclusion="skipped",
-                created_at=(now - timedelta(minutes=50)).isoformat(),
-                updated_at=(now - timedelta(minutes=50)).isoformat(),
-            ),
-            make_workflow_run_response(
-                status="completed",
-                conclusion="skipped",
-                created_at=(now - timedelta(minutes=40)).isoformat(),
-                updated_at=(now - timedelta(minutes=40)).isoformat(),
-            ),
-        ]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(minutes=5)  # within 20min cooldown
+        assert compute_deploy_status(pr, "behind", deploy_created, 20) == DeployStatus.ACC_ARGO
 
-    def test_completed_skipped_then_success_past_cooldown(self):
-        """Skipped runs are ignored; a subsequent successful run past cooldown → deployed."""
+    def test_identical_within_cooldown_returns_acc_argo(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(merged_at=now - timedelta(hours=2))
-        runs = [
-            make_workflow_run_response(
-                status="completed",
-                conclusion="skipped",
-                created_at=(now - timedelta(hours=1, minutes=50)).isoformat(),
-                updated_at=(now - timedelta(hours=1, minutes=50)).isoformat(),
-            ),
-            make_workflow_run_response(
-                status="completed",
-                conclusion="success",
-                created_at=(now - timedelta(hours=1, minutes=30)).isoformat(),
-                updated_at=(now - timedelta(hours=1)).isoformat(),
-            ),
-        ]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYED, 0, 0)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(minutes=5)
+        assert compute_deploy_status(pr, "identical", deploy_created, 20) == DeployStatus.ACC_ARGO
 
-    def test_run_before_merge_ignored(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 14, 0, 0, tzinfo=timezone.utc))
-        runs = [make_workflow_run_response(
-            status="completed",
-            conclusion="success",
-            created_at="2024-06-15T10:00:00Z",  # before merge
-            updated_at="2024-06-15T10:10:00Z",
-        )]
-        # No relevant runs → deploying
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
-
-    def test_invalid_created_at_skipped(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        runs = [{"status": "completed", "conclusion": "success", "created_at": "bad-date", "updated_at": "bad"}]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
-
-    def test_success_with_invalid_updated_at_returns_deploying(self):
+    def test_ahead_returns_deploying(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(merged_at=now - timedelta(hours=1))
-        runs = [{
-            "status": "completed",
-            "conclusion": "success",
-            "created_at": (now - timedelta(minutes=30)).isoformat(),
-            "updated_at": "bad-date",
-        }]
-        assert compute_acc_deploy(pr, runs, 20) == (DeployStatus.ACC_DEPLOYING, 0, 0)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_deploy_status(pr, "ahead", now - timedelta(hours=1), 20) == DeployStatus.ACC_DEPLOYING
+
+    def test_diverged_returns_deploying(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_deploy_status(pr, "diverged", now - timedelta(hours=1), 20) == DeployStatus.ACC_DEPLOYING
+
+    def test_none_compare_status_returns_deploying(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_deploy_status(pr, None, None, 20) == DeployStatus.ACC_DEPLOYING
 
     def test_zero_cooldown_deployed_immediately(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(merged_at=now - timedelta(hours=1))
-        runs = [make_workflow_run_response(
-            status="completed",
-            conclusion="success",
-            created_at=(now - timedelta(minutes=30)).isoformat(),
-            updated_at=(now - timedelta(minutes=5)).isoformat(),
-        )]
-        assert compute_acc_deploy(pr, runs, 0) == (DeployStatus.ACC_DEPLOYED, 0, 0)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(seconds=5)
+        assert compute_deploy_status(pr, "behind", deploy_created, 0) == DeployStatus.ACC_DEPLOYED
 
-    def test_in_progress_with_jobs_returns_step_counts(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        run_id = 99
-        runs = [make_workflow_run_response(
-            status="in_progress",
-            conclusion=None,
-            created_at="2024-06-15T12:30:00Z",
-            id=run_id,
-        )]
-        jobs_by_run_id = {
-            run_id: [
-                {"status": "completed", "name": "build"},
-                {"status": "completed", "name": "lint"},
-                {"status": "in_progress", "name": "test"},
-            ]
-        }
-        status, completed, total = compute_acc_deploy(pr, runs, 20, jobs_by_run_id)
-        assert status == DeployStatus.ACC_DEPLOYING
-        assert completed == 2
-        assert total == 3
-
-    def test_in_progress_run_id_not_in_jobs_returns_zero_counts(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        runs = [make_workflow_run_response(
-            status="in_progress",
-            conclusion=None,
-            created_at="2024-06-15T12:30:00Z",
-            id=42,
-        )]
-        jobs_by_run_id = {}  # empty
-        status, completed, total = compute_acc_deploy(pr, runs, 20, jobs_by_run_id)
-        assert status == DeployStatus.ACC_DEPLOYING
-        assert completed == 0
-        assert total == 0
-
-    def test_run_without_id_field_returns_zero_counts(self):
-        pr = make_pr(merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc))
-        runs = [{
-            "status": "in_progress",
-            "conclusion": None,
-            "created_at": "2024-06-15T12:30:00Z",
-            # no "id" key
-        }]
-        jobs_by_run_id = {42: [{"status": "completed"}]}
-        status, completed, total = compute_acc_deploy(pr, runs, 20, jobs_by_run_id)
-        assert status == DeployStatus.ACC_DEPLOYING
-        assert completed == 0
-        assert total == 0
+    def test_behind_no_deploy_created_at_returns_deployed(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_deploy_status(pr, "behind", None, 20) == DeployStatus.ACC_DEPLOYED
 
 
 class TestComputeUserApproved:

@@ -41,9 +41,9 @@ async def test_save_valid(tmp_path):
     assert cfg["github_repos"] == ["org/repo1", "org/repo2"]
     assert cfg["jira_base_url"] == "https://jira.example.com"
     assert cfg["refresh_interval"] == 60
-    assert cfg["acc_workflow_name"] == "Reisbalans deploy to cloud acceptance"
+    assert cfg["acc_deploy_environment"] == "acceptance"
     assert cfg["acc_retention_days"] == 2
-    assert cfg["acc_cooldown_minutes"] == 20
+    assert cfg["argo_cooldown_minutes"] == 20
 
 
 @pytest.mark.asyncio

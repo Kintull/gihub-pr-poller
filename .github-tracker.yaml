@@ -1,5 +1,8 @@
- jira_base_url: https://internal.jira.mobiliteitsfabriek.nl/browse
- github_repos:
-   - Mobiliteitsfabriek/reisbalans-core
- refresh_interval: 300
- github_username: Kintull
+acc_deploy_environment: acceptance
+acc_retention_days: 2
+argo_cooldown_minutes: 20
+github_repos:
+- Mobiliteitsfabriek/reisbalans-core
+github_username: Kintull
+jira_base_url: https://internal.jira.mobiliteitsfabriek.nl/browse
+refresh_interval: 300

@@ -141,24 +141,14 @@ class TestAccDeployDisplay:
         assert acc_deploy_display(DeployStatus.NONE) == "\u2014"
 
     def test_deploying_spinner_index_0(self):
-        f = SPINNER_FRAMES[0]
-        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, 0) == f"{f}({f}/{f})"
+        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, 0) == SPINNER_FRAMES[0]
 
     def test_deploying_spinner_index_wraps(self):
         idx = len(SPINNER_FRAMES) + 3
-        f = SPINNER_FRAMES[3]
-        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, idx) == f"{f}({f}/{f})"
+        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, idx) == SPINNER_FRAMES[3]
 
     def test_deploying_default_index(self):
-        f = SPINNER_FRAMES[0]
-        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING) == f"{f}({f}/{f})"
-
-    def test_deploying_with_progress(self):
-        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, 0, completed=3, total=5) == f"{SPINNER_FRAMES[0]}(3/5)"
-
-    def test_deploying_zero_total_shows_placeholder(self):
-        f = SPINNER_FRAMES[0]
-        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING, 0, completed=0, total=0) == f"{f}({f}/{f})"
+        assert acc_deploy_display(DeployStatus.ACC_DEPLOYING) == SPINNER_FRAMES[0]
 
     def test_acc_argo_shows_spinner_and_argo(self):
         assert acc_deploy_display(DeployStatus.ACC_ARGO, 0) == f"{SPINNER_FRAMES[0]}ARGO"

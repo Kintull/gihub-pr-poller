@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import logging
 import webbrowser
 from dataclasses import replace
@@ -17,8 +18,8 @@ from github_tracker.config import Config
 from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
 from github_tracker.pr_service import (
-    compute_acc_deploy,
     compute_ci_progress,
+    compute_deploy_status,
     compute_phase1_labels,
     compute_phase2_labels,
     compute_thread_counts,
@@ -34,6 +35,7 @@ from github_tracker.widgets.status_bar import StatusBar
 logger = logging.getLogger("github_tracker.app")
 
 MY_PRS_REFRESH_INTERVAL = 60  # seconds
+UPDATE_CHECK_REPO = "Kintull/github-pr-poller"
 
 HELP_TEXT = """
 Keyboard Shortcuts:
@@ -45,6 +47,14 @@ Keyboard Shortcuts:
   ?            Toggle this help
   q            Quit
 """
+
+
+def _parse_version_tuple(v: str) -> tuple[int, ...]:
+    """Parse a version string like '0.2.3' into a tuple of ints for comparison."""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
 
 
 class HelpOverlay(Static):
@@ -180,8 +190,23 @@ class GitHubTrackerApp(App):
 
         if self.github_client:
             self.run_worker(self._load_prs_progressive(), exclusive=True)
+            self.run_worker(self._check_for_updates())
         else:
             logger.warning("No GitHub client — skipping initial load")
+
+    async def _check_for_updates(self) -> None:
+        """Check GitHub for a newer release and update the header hint."""
+        if not self.github_client:
+            return
+        try:
+            current = importlib.metadata.version("github-tracker")
+        except importlib.metadata.PackageNotFoundError:
+            return
+        latest = await self.github_client.fetch_latest_version(UPDATE_CHECK_REPO)
+        if latest and _parse_version_tuple(latest) > _parse_version_tuple(current):
+            header = self.query_one(TrackerHeader)
+            header.set_update_hint(f"(v{latest} update available)")
+            logger.info("Update available: v%s -> v%s", current, latest)
 
     async def _load_prs_progressive(self) -> None:
         """Load PRs progressively: list first, then details in background."""
@@ -255,9 +280,11 @@ class GitHubTrackerApp(App):
                     merged_at_str = detail.get("merged_at")
                     if merged_at_str:
                         merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
+                        merge_commit_sha = detail.get("merge_commit_sha")
                         merged_pr = replace(
                             prev_pr,
                             merged_at=merged_at,
+                            merge_commit_sha=merge_commit_sha,
                             acc_deploy=DeployStatus.ACC_DEPLOYING,
                         )
                         # Avoid duplicates
@@ -267,41 +294,37 @@ class GitHubTrackerApp(App):
                 except Exception as e:
                     logger.error("Error checking merge status for PR #%d: %s", prev_pr.number, e)
 
-        # Check deploy workflow for repos with merged PRs
-        repos_with_merged = {pr.repo for pr in self._merged_prs}
-        workflow_runs_by_repo: dict[str, list[dict]] = {}
+        # Check deployment status for repos with merged PRs
+        prs_to_check = [
+            (i, mpr) for i, mpr in enumerate(self._merged_prs)
+            if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
+        ]
+        repos_with_merged = {mpr.repo for _, mpr in prs_to_check}
+        deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
         for repo in repos_with_merged:
             try:
-                runs = await self.github_client.fetch_workflow_runs(
-                    repo, self.config.acc_workflow_name
+                sha, created_at = await self.github_client.fetch_latest_deployment_sha(
+                    repo, self.config.acc_deploy_environment
                 )
-                workflow_runs_by_repo[repo] = runs
+                deploy_sha_by_repo[repo] = (sha, created_at)
             except Exception as e:
-                logger.error("Error fetching workflow runs for %s: %s", repo, e)
-                workflow_runs_by_repo[repo] = []
+                logger.error("Error fetching deployment for %s: %s", repo, e)
+                deploy_sha_by_repo[repo] = (None, None)
 
-        # Compute ACC deploy status for each merged PR
-        for i, mpr in enumerate(self._merged_prs):
-            runs = workflow_runs_by_repo.get(mpr.repo, [])
-            # Fetch jobs for in-progress/queued runs
-            jobs_by_run_id: dict[int, list[dict]] = {}
-            for run in runs:
-                run_id = run.get("id")
-                if run_id and run.get("status") in ("queued", "in_progress"):
-                    try:
-                        jobs = await self.github_client.fetch_workflow_run_jobs(mpr.repo, run_id)
-                        jobs_by_run_id[run_id] = jobs
-                    except Exception as e:
-                        logger.error("Error fetching jobs for run %d: %s", run_id, e)
-            new_status, acc_completed, acc_total = compute_acc_deploy(
-                mpr, runs, self.config.acc_cooldown_minutes, jobs_by_run_id
+        for i, mpr in prs_to_check:
+            deploy_sha, deploy_created_at = deploy_sha_by_repo.get(mpr.repo, (None, None))
+            compare_status: str | None = None
+            if deploy_sha and mpr.merge_commit_sha:
+                try:
+                    compare_status = await self.github_client.compare_commits(
+                        mpr.repo, mpr.merge_commit_sha, deploy_sha
+                    )
+                except Exception as e:
+                    logger.error("Error comparing commits for PR #%d: %s", mpr.number, e)
+            new_status = compute_deploy_status(
+                mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
             )
-            self._merged_prs[i] = replace(
-                mpr,
-                acc_deploy=new_status,
-                acc_completed_steps=acc_completed,
-                acc_total_steps=acc_total,
-            )
+            self._merged_prs[i] = replace(mpr, acc_deploy=new_status)
 
         # Filter expired merged PRs
         self._merged_prs = filter_expired_merged_prs(
@@ -551,40 +574,36 @@ class GitHubTrackerApp(App):
         await self._do_refresh_open_prs(open_prs)
 
         if merged_prs_in_table:
-            repos_with_merged = {pr.repo for pr in merged_prs_in_table}
-            workflow_runs_by_repo: dict[str, list[dict]] = {}
+            prs_to_check = [
+                mpr for mpr in merged_prs_in_table
+                if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
+            ]
+            repos_with_merged = {mpr.repo for mpr in prs_to_check}
+            deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
             for repo in repos_with_merged:
                 try:
-                    runs = await self.github_client.fetch_workflow_runs(
-                        repo, self.config.acc_workflow_name
+                    sha, created_at = await self.github_client.fetch_latest_deployment_sha(
+                        repo, self.config.acc_deploy_environment
                     )
-                    workflow_runs_by_repo[repo] = runs
+                    deploy_sha_by_repo[repo] = (sha, created_at)
                 except Exception as e:
-                    logger.error("Error fetching workflow runs for %s: %s", repo, e)
-                    workflow_runs_by_repo[repo] = []
+                    logger.error("Error fetching deployment for %s: %s", repo, e)
+                    deploy_sha_by_repo[repo] = (None, None)
 
-            for mpr in merged_prs_in_table:
-                runs = workflow_runs_by_repo.get(mpr.repo, [])
-                jobs_by_run_id: dict[int, list[dict]] = {}
-                for run in runs:
-                    run_id = run.get("id")
-                    if run_id and run.get("status") in ("queued", "in_progress"):
-                        try:
-                            jobs = await self.github_client.fetch_workflow_run_jobs(
-                                mpr.repo, run_id
-                            )
-                            jobs_by_run_id[run_id] = jobs
-                        except Exception as e:
-                            logger.error("Error fetching jobs for run %d: %s", run_id, e)
-                new_status, acc_completed, acc_total = compute_acc_deploy(
-                    mpr, runs, self.config.acc_cooldown_minutes, jobs_by_run_id
+            for mpr in prs_to_check:
+                deploy_sha, deploy_created_at = deploy_sha_by_repo.get(mpr.repo, (None, None))
+                compare_status: str | None = None
+                if deploy_sha and mpr.merge_commit_sha:
+                    try:
+                        compare_status = await self.github_client.compare_commits(
+                            mpr.repo, mpr.merge_commit_sha, deploy_sha
+                        )
+                    except Exception as e:
+                        logger.error("Error comparing commits for PR #%d: %s", mpr.number, e)
+                new_status = compute_deploy_status(
+                    mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
                 )
-                updated_mpr = replace(
-                    mpr,
-                    acc_deploy=new_status,
-                    acc_completed_steps=acc_completed,
-                    acc_total_steps=acc_total,
-                )
+                updated_mpr = replace(mpr, acc_deploy=new_status)
                 self._update_pr_in_tables(updated_mpr)
                 for j, m in enumerate(self._merged_prs):
                     if m.number == mpr.number and m.repo == mpr.repo:

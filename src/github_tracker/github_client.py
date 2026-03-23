@@ -126,46 +126,67 @@ class GitHubClient:
         logger.debug("Found %d check runs for %s @ %s", len(runs), repo, ref[:8])
         return runs
 
-    async def fetch_workflow_runs(
-        self, repo: str, workflow_name: str, branch: str = "master", per_page: int = 5
-    ) -> list[dict]:
-        """Fetch recent workflow runs for a named workflow."""
-        logger.debug("Fetching workflows for %s (looking for %r)", repo, workflow_name)
-        workflows_data = await self._get(f"/repos/{repo}/actions/workflows")
-        if not isinstance(workflows_data, dict):
-            logger.warning("Workflows response not a dict for %s", repo)
-            return []
+    async def fetch_latest_deployment_sha(
+        self, repo: str, environment: str
+    ) -> tuple[str | None, datetime | None]:
+        """Fetch SHA + created_at of the latest successful deployment for an environment."""
+        logger.debug("Fetching deployments for %s env=%s", repo, environment)
+        try:
+            data = await self._get(
+                f"/repos/{repo}/deployments?environment={environment}&per_page=5"
+            )
+        except GitHubAPIError:
+            logger.warning("Failed to fetch deployments for %s env=%s", repo, environment)
+            return (None, None)
 
-        workflow_id = None
-        for wf in workflows_data.get("workflows", []):
-            if wf.get("name") == workflow_name:
-                workflow_id = wf["id"]
-                break
+        if not isinstance(data, list):
+            logger.warning("Deployments response not a list for %s", repo)
+            return (None, None)
 
-        if workflow_id is None:
-            logger.warning("Workflow %r not found in %s", workflow_name, repo)
-            return []
+        for deployment in data:
+            deploy_id = deployment.get("id")
+            sha = deployment.get("sha")
+            if not deploy_id or not sha:
+                continue
+            try:
+                statuses = await self._get(
+                    f"/repos/{repo}/deployments/{deploy_id}/statuses"
+                )
+            except GitHubAPIError:
+                continue
+            if not isinstance(statuses, list):
+                continue
+            for status in statuses:
+                if status.get("state") == "success":
+                    created_str = deployment.get("created_at", "")
+                    try:
+                        created_at = datetime.fromisoformat(
+                            created_str.replace("Z", "+00:00")
+                        )
+                    except (ValueError, AttributeError):
+                        created_at = None
+                    logger.debug(
+                        "Latest successful deployment for %s env=%s: sha=%s",
+                        repo, environment, sha[:8],
+                    )
+                    return (sha, created_at)
 
-        runs_data = await self._get(
-            f"/repos/{repo}/actions/workflows/{workflow_id}/runs"
-            f"?branch={branch}&per_page={per_page}"
-        )
-        if not isinstance(runs_data, dict):
-            logger.warning("Workflow runs response not a dict for %s", repo)
-            return []
+        logger.debug("No successful deployment found for %s env=%s", repo, environment)
+        return (None, None)
 
-        runs = runs_data.get("workflow_runs", [])
-        logger.debug("Found %d workflow runs for %s/%r", len(runs), repo, workflow_name)
-        return runs
-
-    async def fetch_workflow_run_jobs(self, repo: str, run_id: int) -> list[dict]:
-        """Fetch jobs for a specific workflow run."""
-        logger.debug("Fetching jobs for %s run %d", repo, run_id)
-        data = await self._get(f"/repos/{repo}/actions/runs/{run_id}/jobs")
+    async def compare_commits(
+        self, repo: str, base: str, head: str
+    ) -> str | None:
+        """Compare two commits. Returns status: ahead, behind, identical, diverged, or None."""
+        logger.debug("Comparing %s: %s...%s", repo, base[:8], head[:8])
+        try:
+            data = await self._get(f"/repos/{repo}/compare/{base}...{head}")
+        except GitHubAPIError:
+            logger.warning("Failed to compare commits for %s", repo)
+            return None
         if not isinstance(data, dict):
-            logger.warning("Jobs response not a dict for %s run %d", repo, run_id)
-            return []
-        return data.get("jobs", [])
+            return None
+        return data.get("status")
 
     async def fetch_review_threads(self, repo: str, pr_number: int) -> list[dict]:
         """Fetch review threads for a PR via the GraphQL API."""
@@ -200,6 +221,17 @@ class GitHubClient:
         except Exception as e:
             logger.warning("Error fetching review threads for %s#%d: %s", repo, pr_number, e)
             return []
+
+    async def fetch_latest_version(self, repo: str) -> str | None:
+        """Fetch the latest tag name from a repo. Returns version string or None."""
+        try:
+            data = await self._get(f"/repos/{repo}/tags?per_page=1")
+            if isinstance(data, list) and data:
+                tag = data[0].get("name", "")
+                return tag.lstrip("v") if tag else None
+        except Exception as e:
+            logger.debug("Failed to fetch latest version from %s: %s", repo, e)
+        return None
 
     async def fetch_pr_detail(self, repo: str, pr_number: int) -> dict:
         """Fetch full detail for a single pull request."""

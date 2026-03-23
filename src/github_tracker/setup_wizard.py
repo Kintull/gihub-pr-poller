@@ -112,9 +112,9 @@ class SetupWizard(App[bool]):
             "github_repos": repos,
             "jira_base_url": jira_url,
             "refresh_interval": refresh_interval,
-            "acc_workflow_name": "Reisbalans deploy to cloud acceptance",
+            "acc_deploy_environment": "acceptance",
             "acc_retention_days": 2,
-            "acc_cooldown_minutes": 20,
+            "argo_cooldown_minutes": 20,
         }
 
         self._config_path.parent.mkdir(parents=True, exist_ok=True)

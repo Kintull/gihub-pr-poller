@@ -15,9 +15,9 @@ class TestConfig:
         assert c.github_repos == []
         assert c.refresh_interval == 300
         assert c.github_username == ""
-        assert c.acc_workflow_name == "Reisbalans deploy to cloud acceptance"
+        assert c.acc_deploy_environment == "acceptance"
         assert c.acc_retention_days == 2
-        assert c.acc_cooldown_minutes == 20
+        assert c.argo_cooldown_minutes == 20
 
     def test_jira_enabled_false(self):
         assert Config().jira_enabled() is False
@@ -139,16 +139,16 @@ class TestLoadConfig:
         with pytest.raises(ConfigError, match="github_username must be a string"):
             load_config(path)
 
-    def test_acc_workflow_name(self, tmp_path):
+    def test_acc_deploy_environment(self, tmp_path):
         path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"acc_workflow_name": "My Deploy"}))
+        path.write_text(yaml.dump({"acc_deploy_environment": "staging"}))
         config = load_config(path)
-        assert config.acc_workflow_name == "My Deploy"
+        assert config.acc_deploy_environment == "staging"
 
-    def test_invalid_acc_workflow_name_type(self, tmp_path):
+    def test_invalid_acc_deploy_environment_type(self, tmp_path):
         path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"acc_workflow_name": 123}))
-        with pytest.raises(ConfigError, match="acc_workflow_name must be a string"):
+        path.write_text(yaml.dump({"acc_deploy_environment": 123}))
+        with pytest.raises(ConfigError, match="acc_deploy_environment must be a string"):
             load_config(path)
 
     def test_acc_retention_days(self, tmp_path):
@@ -175,28 +175,28 @@ class TestLoadConfig:
         with pytest.raises(ConfigError, match="acc_retention_days must be a non-negative integer"):
             load_config(path)
 
-    def test_acc_cooldown_minutes(self, tmp_path):
+    def test_argo_cooldown_minutes(self, tmp_path):
         path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"acc_cooldown_minutes": 30}))
+        path.write_text(yaml.dump({"argo_cooldown_minutes": 30}))
         config = load_config(path)
-        assert config.acc_cooldown_minutes == 30
+        assert config.argo_cooldown_minutes == 30
 
-    def test_acc_cooldown_minutes_zero(self, tmp_path):
+    def test_argo_cooldown_minutes_zero(self, tmp_path):
         path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"acc_cooldown_minutes": 0}))
+        path.write_text(yaml.dump({"argo_cooldown_minutes": 0}))
         config = load_config(path)
-        assert config.acc_cooldown_minutes == 0
+        assert config.argo_cooldown_minutes == 0
 
-    def test_invalid_acc_cooldown_minutes_negative(self, tmp_path):
+    def test_invalid_argo_cooldown_minutes_negative(self, tmp_path):
         path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"acc_cooldown_minutes": -5}))
-        with pytest.raises(ConfigError, match="acc_cooldown_minutes must be a non-negative integer"):
+        path.write_text(yaml.dump({"argo_cooldown_minutes": -5}))
+        with pytest.raises(ConfigError, match="argo_cooldown_minutes must be a non-negative integer"):
             load_config(path)
 
-    def test_invalid_acc_cooldown_minutes_type(self, tmp_path):
+    def test_invalid_argo_cooldown_minutes_type(self, tmp_path):
         path = tmp_path / "config.yaml"
-        path.write_text(yaml.dump({"acc_cooldown_minutes": "fast"}))
-        with pytest.raises(ConfigError, match="acc_cooldown_minutes must be a non-negative integer"):
+        path.write_text(yaml.dump({"argo_cooldown_minutes": "fast"}))
+        with pytest.raises(ConfigError, match="argo_cooldown_minutes must be a non-negative integer"):
             load_config(path)
 
 
@@ -210,9 +210,9 @@ class TestCreateDefaultConfig:
         assert data["github_repos"] == []
         assert data["refresh_interval"] == 300
         assert data["github_username"] == ""
-        assert data["acc_workflow_name"] == "Reisbalans deploy to cloud acceptance"
+        assert data["acc_deploy_environment"] == "acceptance"
         assert data["acc_retention_days"] == 2
-        assert data["acc_cooldown_minutes"] == 20
+        assert data["argo_cooldown_minutes"] == 20
 
     def test_creates_parent_dirs(self, tmp_path):
         path = tmp_path / "a" / "b" / "config.yaml"

@@ -12,7 +12,7 @@ from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
 logger = logging.getLogger("github_tracker.state")
 
 STATE_FILE = Path.home() / ".github-tracker-state.json"
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 _REQUIRED_PR_KEYS = {"number", "title", "author", "url", "repo"}
 
@@ -59,7 +59,7 @@ def _validate_state(data: object) -> tuple[list[PullRequest], list[PullRequest]]
         return ([], [])
 
     version = data.get("version")
-    if version not in (1, 2, CURRENT_VERSION):
+    if version not in (1, 2, 3, CURRENT_VERSION):
         logger.warning("Unknown state version: %r (expected %d)", version, CURRENT_VERSION)
         return ([], [])
 
@@ -157,6 +157,7 @@ def _merged_pr_to_dict(pr: PullRequest) -> dict:
     d = _pr_to_dict(pr)
     d["merged_at"] = pr.merged_at.isoformat() if pr.merged_at else None
     d["acc_deploy"] = pr.acc_deploy.value
+    d["merge_commit_sha"] = pr.merge_commit_sha
     return d
 
 
@@ -184,6 +185,11 @@ def _dict_to_merged_pr(d: object) -> PullRequest | None:
             acc_deploy = DeployStatus(acc_deploy_str)
         except ValueError:
             logger.warning("Unknown acc_deploy value: %r — using NONE", acc_deploy_str)
+    # Migration: old ACC_ARGO state needs re-check via Deployments API
+    if acc_deploy == DeployStatus.ACC_ARGO:
+        acc_deploy = DeployStatus.ACC_DEPLOYING
+
+    merge_commit_sha = d.get("merge_commit_sha")
 
     return PullRequest(
         number=pr.number,
@@ -201,4 +207,5 @@ def _dict_to_merged_pr(d: object) -> PullRequest | None:
         labels=pr.labels,
         merged_at=merged_at,
         acc_deploy=acc_deploy,
+        merge_commit_sha=merge_commit_sha,
     )

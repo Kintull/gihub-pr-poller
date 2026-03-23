@@ -84,10 +84,7 @@ ACC_DEPLOY_SYMBOLS: dict[DeployStatus, str | Text] = {
 def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str | Text:
     """Return display string for a deploy status."""
     if status == DeployStatus.ACC_DEPLOYING:
-        frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
-        if total > 0:
-            return f"{frame}({completed}/{total})"
-        return f"{frame}({frame}/{frame})"
+        return SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
     if status == DeployStatus.ACC_ARGO:
         return f"{SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]}ARGO"
     return ACC_DEPLOY_SYMBOLS[status]
@@ -116,6 +113,7 @@ class PullRequest:
     ci_total_steps: int = field(default=0)
     acc_completed_steps: int = field(default=0)
     acc_total_steps: int = field(default=0)
+    merge_commit_sha: str | None = field(default=None)
     user_approved: bool = field(default=False)
     total_threads: int = field(default=0)
     unresolved_threads: int = field(default=0)
