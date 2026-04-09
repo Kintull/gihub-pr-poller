@@ -16,6 +16,7 @@ class TestConfig:
         assert c.refresh_interval == 300
         assert c.github_username == ""
         assert c.acc_deploy_environment == "acceptance"
+        assert c.prd_deploy_environment == "production"
         assert c.acc_retention_days == 2
         assert c.argo_cooldown_minutes == 20
 
@@ -151,6 +152,18 @@ class TestLoadConfig:
         with pytest.raises(ConfigError, match="acc_deploy_environment must be a string"):
             load_config(path)
 
+    def test_prd_deploy_environment(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"prd_deploy_environment": "prod"}))
+        config = load_config(path)
+        assert config.prd_deploy_environment == "prod"
+
+    def test_invalid_prd_deploy_environment_type(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({"prd_deploy_environment": 123}))
+        with pytest.raises(ConfigError, match="prd_deploy_environment must be a string"):
+            load_config(path)
+
     def test_acc_retention_days(self, tmp_path):
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump({"acc_retention_days": 5}))
@@ -211,6 +224,7 @@ class TestCreateDefaultConfig:
         assert data["refresh_interval"] == 300
         assert data["github_username"] == ""
         assert data["acc_deploy_environment"] == "acceptance"
+        assert data["prd_deploy_environment"] == "production"
         assert data["acc_retention_days"] == 2
         assert data["argo_cooldown_minutes"] == 20
 

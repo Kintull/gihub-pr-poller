@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 
 from rich.text import Text
 
-from github_tracker.models import CIStatus, DeployStatus, PRLabel
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus
 from github_tracker.theme import Color
 from github_tracker.widgets.pr_table import COLUMNS, PRTable
 from tests.conftest import make_pr
@@ -219,7 +219,8 @@ class TestPRTable:
             assert values[4] == Text("✓", style=Color.GREEN)
             assert values[5] == Text("✓", style=Color.GREEN)
             assert values[6] == "\u2014"  # ACC = NONE → em dash
-            assert values[7] == "PROJ-1"
+            assert values[7] == "\u2014"  # PRD = NONE → em dash
+            assert values[8] == "PROJ-1"
 
     @pytest.mark.asyncio
     async def test_row_values_approval_levels(self):
@@ -289,11 +290,16 @@ class TestPRTable:
             assert values[4] == "\u2014"  # approvals → dash
             assert values[5] == "\u2014"  # CI → dash
             assert values[6] == Text("✓", style=Color.GREEN)  # ACC → deployed
+            assert values[7] == "\u2014"  # PRD = NONE → em dash
             assert values[0] == "10"
 
     @pytest.mark.asyncio
     async def test_acc_column_in_columns(self):
         assert "ACC" in COLUMNS
+
+    @pytest.mark.asyncio
+    async def test_prd_column_in_columns(self):
+        assert "PRD" in COLUMNS
 
     @pytest.mark.asyncio
     async def test_advance_spinner_with_deploying(self):
@@ -341,6 +347,67 @@ class TestPRTable:
             table._spinner_index = 0
             values = table._row_values(pr)
             assert values[6] == f"{SPINNER_FRAMES[0]}ARGO"
+
+    @pytest.mark.asyncio
+    async def test_advance_spinner_with_prd_deploying(self):
+        from datetime import datetime, timezone
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            prs = [make_pr(
+                number=1,
+                merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+                prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
+            )]
+            table.load_prs(prs)
+            initial_index = table._spinner_index
+            table.advance_spinner()
+            assert table._spinner_index == initial_index + 1
+
+    @pytest.mark.asyncio
+    async def test_prd_cell_shows_argo(self):
+        """PRD cell shows spinner+ARGO for PRD_ARGO status."""
+        from datetime import datetime, timezone
+        from github_tracker.models import SPINNER_FRAMES
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(
+                number=1,
+                merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+                prd_deploy=PrdDeployStatus.PRD_ARGO,
+            )
+            table._spinner_index = 0
+            values = table._row_values(pr)
+            assert values[7] == f"{SPINNER_FRAMES[0]}ARGO"
+
+    @pytest.mark.asyncio
+    async def test_advance_spinner_animates_prd_argo(self):
+        """advance_spinner also updates PRD cell for PRD_ARGO status."""
+        from datetime import datetime, timezone
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            prs = [make_pr(
+                number=1,
+                merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+                prd_deploy=PrdDeployStatus.PRD_ARGO,
+            )]
+            table.load_prs(prs)
+            initial_index = table._spinner_index
+            table.advance_spinner()
+            assert table._spinner_index == initial_index + 1
+
+    @pytest.mark.asyncio
+    async def test_row_values_prd_deployed(self):
+        """PRD column shows green checkmark for PRD_DEPLOYED status."""
+        from datetime import datetime, timezone
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(
+                number=10,
+                merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+                prd_deploy=PrdDeployStatus.PRD_DEPLOYED,
+            )
+            values = table._row_values(pr)
+            assert values[7] == Text("✓", style=Color.GREEN)
 
     @pytest.mark.asyncio
     async def test_advance_spinner_animates_acc_argo(self):

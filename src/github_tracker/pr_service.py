@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from github_tracker.models import DeployStatus, PRLabel, PullRequest
+from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 
 
 def compute_phase1_labels(
@@ -144,15 +144,47 @@ def compute_deploy_status(
     return DeployStatus.ACC_DEPLOYING
 
 
+def compute_prd_deploy_status(
+    pr: PullRequest,
+    compare_status: str | None,
+    deploy_created_at: datetime | None,
+    argo_cooldown_minutes: int,
+) -> PrdDeployStatus:
+    """Compute PRD deploy status from Deployments API comparison result."""
+    if pr.merged_at is None:
+        return PrdDeployStatus.NONE
+
+    if pr.merge_commit_sha is None:
+        return PrdDeployStatus.PRD_DEPLOYING
+
+    if compare_status in ("ahead", "identical"):
+        if deploy_created_at is not None:
+            now = datetime.now(tz=timezone.utc)
+            created = deploy_created_at if deploy_created_at.tzinfo else deploy_created_at.replace(tzinfo=timezone.utc)
+            if now < created + timedelta(minutes=argo_cooldown_minutes):
+                return PrdDeployStatus.PRD_ARGO
+        return PrdDeployStatus.PRD_DEPLOYED
+
+    return PrdDeployStatus.PRD_DEPLOYING
+
+
 def filter_expired_merged_prs(
     merged_prs: list[PullRequest], retention_days: int
 ) -> list[PullRequest]:
-    """Remove deployed PRs past the retention period."""
+    """Remove deployed PRs past the retention period.
+
+    A merged PR is only removed if both ACC and PRD are fully deployed
+    and the merge time is past the retention cutoff.
+    """
     now = datetime.now(tz=timezone.utc)
     cutoff = now - timedelta(days=retention_days)
     result: list[PullRequest] = []
     for pr in merged_prs:
-        if pr.acc_deploy == DeployStatus.ACC_DEPLOYED and pr.merged_at is not None:
+        if (
+            pr.acc_deploy == DeployStatus.ACC_DEPLOYED
+            and pr.prd_deploy == PrdDeployStatus.PRD_DEPLOYED
+            and pr.merged_at is not None
+        ):
             merged_at = pr.merged_at if pr.merged_at.tzinfo else pr.merged_at.replace(tzinfo=timezone.utc)
             if merged_at < cutoff:
                 continue

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 
 
 def make_pr(**overrides) -> PullRequest:
@@ -26,11 +26,14 @@ def make_pr(**overrides) -> PullRequest:
         "repo": "owner/repo",
         "labels": frozenset(),
         "acc_deploy": DeployStatus.NONE,
+        "prd_deploy": PrdDeployStatus.NONE,
         "merged_at": None,
         "ci_completed_steps": 0,
         "ci_total_steps": 0,
         "acc_completed_steps": 0,
         "acc_total_steps": 0,
+        "prd_completed_steps": 0,
+        "prd_total_steps": 0,
         "merge_commit_sha": None,
         "user_approved": False,
         "total_threads": 0,

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 from github_tracker.state import (
     CURRENT_VERSION,
     _dict_to_merged_pr,
@@ -166,6 +166,12 @@ class TestValidateState:
 
     def test_v3_backward_compat(self):
         state = _make_state([_make_pr_dict()], version=3)
+        open_prs, merged_prs = _validate_state(state)
+        assert len(open_prs) == 1
+        assert merged_prs == []
+
+    def test_v4_backward_compat(self):
+        state = _make_state([_make_pr_dict()], version=4)
         open_prs, merged_prs = _validate_state(state)
         assert len(open_prs) == 1
         assert merged_prs == []
@@ -334,6 +340,16 @@ class TestMergedPrToDict:
         assert d["merged_at"] == merged_at.isoformat()
         assert d["acc_deploy"] == "acc_deploying"
 
+    def test_includes_prd_deploy(self):
+        merged_at = datetime(2024, 6, 15, 14, 0, 0, tzinfo=timezone.utc)
+        pr = make_pr(
+            number=42,
+            merged_at=merged_at,
+            prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
+        )
+        d = _merged_pr_to_dict(pr)
+        assert d["prd_deploy"] == "prd_deploying"
+
     def test_includes_merge_commit_sha(self):
         pr = make_pr(
             number=42,
@@ -425,6 +441,36 @@ class TestDictToMergedPr:
     def test_missing_required_keys(self):
         d = {"number": 1}  # Missing other required keys
         assert _dict_to_merged_pr(d) is None
+
+    def test_valid_prd_deploy(self):
+        d = _make_pr_dict(
+            merged_at="2024-06-15T14:00:00+00:00",
+            prd_deploy="prd_deployed",
+        )
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.prd_deploy == PrdDeployStatus.PRD_DEPLOYED
+
+    def test_missing_prd_deploy(self):
+        d = _make_pr_dict()
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.prd_deploy == PrdDeployStatus.NONE
+
+    def test_unknown_prd_deploy_value(self):
+        d = _make_pr_dict(prd_deploy="future_status")
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.prd_deploy == PrdDeployStatus.NONE
+
+    def test_prd_argo_migrated_to_deploying(self):
+        d = _make_pr_dict(
+            merged_at="2024-06-15T14:00:00+00:00",
+            prd_deploy="prd_argo",
+        )
+        pr = _dict_to_merged_pr(d)
+        assert pr is not None
+        assert pr.prd_deploy == PrdDeployStatus.PRD_DEPLOYING
 
 
 class TestRoundTrip:

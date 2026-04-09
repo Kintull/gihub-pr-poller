@@ -20,8 +20,8 @@ from github_tracker.deploy_tracker import (
     update_deploy_statuses,
 )
 from github_tracker.github_client import GitHubClient
-from github_tracker.models import DeployStatus, PRLabel, PullRequest
-from github_tracker.pr_service import filter_expired_merged_prs, group_prs
+from github_tracker.models import PRLabel, PrdDeployStatus, PullRequest
+from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, group_prs
 from github_tracker.refresh import (
     backfill_pr_details,
     fetch_pr_lists,
@@ -242,14 +242,48 @@ class GitHubTrackerApp(App):
         new_merged = await detect_newly_merged_prs(
             self._previous_open_prs, current_open_numbers, self._merged_prs, self.github_client
         )
+        # Set PRD_DEPLOYING on newly merged PRs
+        new_merged = [replace(m, prd_deploy=PrdDeployStatus.PRD_DEPLOYING) for m in new_merged]
         self._merged_prs.extend(new_merged)
 
-        # Backfill merge_commit_sha and check deployment status
+        # Backfill merge_commit_sha and check ACC deployment status
         self._merged_prs = await backfill_merge_commit_shas(self._merged_prs, self.github_client)
         self._merged_prs = await update_deploy_statuses(
             self._merged_prs, self.github_client,
             self.config.acc_deploy_environment, self.config.argo_cooldown_minutes,
         )
+
+        # Check PRD deployment status for repos with merged PRs
+        prd_prs_to_check = [
+            (i, mpr) for i, mpr in enumerate(self._merged_prs)
+            if mpr.prd_deploy != PrdDeployStatus.PRD_DEPLOYED and mpr.merge_commit_sha is not None
+        ]
+        prd_repos = {mpr.repo for _, mpr in prd_prs_to_check}
+        prd_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
+        for repo in prd_repos:
+            try:
+                sha, created_at = await self.github_client.fetch_latest_deployment_sha(
+                    repo, self.config.prd_deploy_environment
+                )
+                prd_deploy_sha_by_repo[repo] = (sha, created_at)
+            except Exception as e:
+                logger.error("Error fetching PRD deployment for %s: %s", repo, e)
+                prd_deploy_sha_by_repo[repo] = (None, None)
+
+        for i, mpr in prd_prs_to_check:
+            deploy_sha, deploy_created_at = prd_deploy_sha_by_repo.get(mpr.repo, (None, None))
+            compare_status: str | None = None
+            if deploy_sha and mpr.merge_commit_sha:
+                try:
+                    compare_status = await self.github_client.compare_commits(
+                        mpr.repo, mpr.merge_commit_sha, deploy_sha
+                    )
+                except Exception as e:
+                    logger.error("Error comparing commits for PR #%d (PRD): %s", mpr.number, e)
+            new_status = compute_prd_deploy_status(
+                mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
+            )
+            self._merged_prs[i] = replace(mpr, prd_deploy=new_status)
 
         # Filter expired merged PRs
         self._merged_prs = filter_expired_merged_prs(
@@ -419,15 +453,54 @@ class GitHubTrackerApp(App):
                 self._update_pr_in_tables(updated)
                 self._sync_merged_pr(updated)
 
-            # Check deployment status (use updated list that has backfilled SHAs)
+            # Check ACC deployment status (use updated list that has backfilled SHAs)
             updated_merged = await update_deploy_statuses(
                 updated_merged, self.github_client,
                 self.config.acc_deploy_environment, self.config.argo_cooldown_minutes,
             )
-            # Sync deploy status updates
+            # Sync ACC deploy status updates
             for updated in updated_merged:
                 self._update_pr_in_tables(updated)
                 self._sync_merged_pr(updated)
+
+            # Check PRD deployment status
+            # Re-read merged PRs from table after ACC updates
+            merged_prs_in_table = [pr for pr in table.pull_requests if pr.merged_at is not None]
+            prd_prs_to_check = [
+                mpr for mpr in merged_prs_in_table
+                if mpr.prd_deploy != PrdDeployStatus.PRD_DEPLOYED and mpr.merge_commit_sha is not None
+            ]
+            prd_repos = {mpr.repo for mpr in prd_prs_to_check}
+            prd_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
+            for repo in prd_repos:
+                try:
+                    sha, created_at = await self.github_client.fetch_latest_deployment_sha(
+                        repo, self.config.prd_deploy_environment
+                    )
+                    prd_deploy_sha_by_repo[repo] = (sha, created_at)
+                except Exception as e:
+                    logger.error("Error fetching PRD deployment for %s: %s", repo, e)
+                    prd_deploy_sha_by_repo[repo] = (None, None)
+
+            for mpr in prd_prs_to_check:
+                deploy_sha, deploy_created_at = prd_deploy_sha_by_repo.get(mpr.repo, (None, None))
+                compare_status: str | None = None
+                if deploy_sha and mpr.merge_commit_sha:
+                    try:
+                        compare_status = await self.github_client.compare_commits(
+                            mpr.repo, mpr.merge_commit_sha, deploy_sha
+                        )
+                    except Exception as e:
+                        logger.error("Error comparing commits for PR #%d (PRD): %s", mpr.number, e)
+                new_status = compute_prd_deploy_status(
+                    mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
+                )
+                updated_mpr = replace(mpr, prd_deploy=new_status)
+                self._update_pr_in_tables(updated_mpr)
+                for j, m in enumerate(self._merged_prs):
+                    if m.number == mpr.number and m.repo == mpr.repo:
+                        self._merged_prs[j] = updated_mpr
+                        break
 
         my_table = self.query_one("#my-pr-table", PRTable)
         self._regroup_and_save()
