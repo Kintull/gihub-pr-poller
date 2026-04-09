@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "refresh_interval": 300,
     "github_username": "",
     "acc_deploy_environment": "acceptance",
+    "prd_deploy_environment": "production",
     "acc_retention_days": 2,
     "argo_cooldown_minutes": 20,
 }
@@ -36,6 +37,7 @@ class Config:
     refresh_interval: int = 300
     github_username: str = ""
     acc_deploy_environment: str = "acceptance"
+    prd_deploy_environment: str = "production"
     acc_retention_days: int = 2
     argo_cooldown_minutes: int = 20
 
@@ -97,6 +99,10 @@ def _parse_config(data: dict) -> Config:
     if not isinstance(acc_deploy_environment, str):
         raise ConfigError("acc_deploy_environment must be a string")
 
+    prd_deploy_environment = data.get("prd_deploy_environment", "production")
+    if not isinstance(prd_deploy_environment, str):
+        raise ConfigError("prd_deploy_environment must be a string")
+
     acc_retention_days = data.get("acc_retention_days", 2)
     if not isinstance(acc_retention_days, int) or acc_retention_days < 0:
         raise ConfigError("acc_retention_days must be a non-negative integer")
@@ -111,6 +117,7 @@ def _parse_config(data: dict) -> Config:
         refresh_interval=refresh_interval,
         github_username=github_username,
         acc_deploy_environment=acc_deploy_environment,
+        prd_deploy_environment=prd_deploy_environment,
         acc_retention_days=acc_retention_days,
         argo_cooldown_minutes=argo_cooldown_minutes,
     )

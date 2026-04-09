@@ -7,12 +7,12 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 
 logger = logging.getLogger("github_tracker.state")
 
 STATE_FILE = Path.home() / ".github-tracker-state.json"
-CURRENT_VERSION = 4
+CURRENT_VERSION = 5
 
 _REQUIRED_PR_KEYS = {"number", "title", "author", "url", "repo"}
 
@@ -59,7 +59,7 @@ def _validate_state(data: object) -> tuple[list[PullRequest], list[PullRequest]]
         return ([], [])
 
     version = data.get("version")
-    if version not in (1, 2, 3, CURRENT_VERSION):
+    if version not in (1, 2, 3, 4, CURRENT_VERSION):
         logger.warning("Unknown state version: %r (expected %d)", version, CURRENT_VERSION)
         return ([], [])
 
@@ -157,6 +157,7 @@ def _merged_pr_to_dict(pr: PullRequest) -> dict:
     d = _pr_to_dict(pr)
     d["merged_at"] = pr.merged_at.isoformat() if pr.merged_at else None
     d["acc_deploy"] = pr.acc_deploy.value
+    d["prd_deploy"] = pr.prd_deploy.value
     d["merge_commit_sha"] = pr.merge_commit_sha
     return d
 
@@ -189,6 +190,17 @@ def _dict_to_merged_pr(d: object) -> PullRequest | None:
     if acc_deploy == DeployStatus.ACC_ARGO:
         acc_deploy = DeployStatus.ACC_DEPLOYING
 
+    prd_deploy = PrdDeployStatus.NONE
+    prd_deploy_str = d.get("prd_deploy")
+    if prd_deploy_str:
+        try:
+            prd_deploy = PrdDeployStatus(prd_deploy_str)
+        except ValueError:
+            logger.warning("Unknown prd_deploy value: %r — using NONE", prd_deploy_str)
+    # Migration: old PRD_ARGO state needs re-check via Deployments API
+    if prd_deploy == PrdDeployStatus.PRD_ARGO:
+        prd_deploy = PrdDeployStatus.PRD_DEPLOYING
+
     merge_commit_sha = d.get("merge_commit_sha")
 
     return PullRequest(
@@ -207,5 +219,6 @@ def _dict_to_merged_pr(d: object) -> PullRequest | None:
         labels=pr.labels,
         merged_at=merged_at,
         acc_deploy=acc_deploy,
+        prd_deploy=prd_deploy,
         merge_commit_sha=merge_commit_sha,
     )

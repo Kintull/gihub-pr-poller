@@ -16,12 +16,13 @@ from textual.widgets import DataTable, Static
 
 from github_tracker.config import Config
 from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 from github_tracker.pr_service import (
     compute_ci_progress,
     compute_deploy_status,
     compute_phase1_labels,
     compute_phase2_labels,
+    compute_prd_deploy_status,
     compute_thread_counts,
     compute_user_approved,
     filter_expired_merged_prs,
@@ -286,6 +287,7 @@ class GitHubTrackerApp(App):
                             merged_at=merged_at,
                             merge_commit_sha=merge_commit_sha,
                             acc_deploy=DeployStatus.ACC_DEPLOYING,
+                            prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
                         )
                         # Avoid duplicates
                         if not any(m.number == merged_pr.number and m.repo == merged_pr.repo for m in self._merged_prs):
@@ -306,25 +308,25 @@ class GitHubTrackerApp(App):
                 except Exception as e:
                     logger.error("Error backfilling merge_commit_sha for PR #%d: %s", mpr.number, e)
 
-        # Check deployment status for repos with merged PRs
-        prs_to_check = [
+        # Check ACC deployment status for repos with merged PRs
+        acc_prs_to_check = [
             (i, mpr) for i, mpr in enumerate(self._merged_prs)
             if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
         ]
-        repos_with_merged = {mpr.repo for _, mpr in prs_to_check}
-        deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
-        for repo in repos_with_merged:
+        acc_repos = {mpr.repo for _, mpr in acc_prs_to_check}
+        acc_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
+        for repo in acc_repos:
             try:
                 sha, created_at = await self.github_client.fetch_latest_deployment_sha(
                     repo, self.config.acc_deploy_environment
                 )
-                deploy_sha_by_repo[repo] = (sha, created_at)
+                acc_deploy_sha_by_repo[repo] = (sha, created_at)
             except Exception as e:
-                logger.error("Error fetching deployment for %s: %s", repo, e)
-                deploy_sha_by_repo[repo] = (None, None)
+                logger.error("Error fetching ACC deployment for %s: %s", repo, e)
+                acc_deploy_sha_by_repo[repo] = (None, None)
 
-        for i, mpr in prs_to_check:
-            deploy_sha, deploy_created_at = deploy_sha_by_repo.get(mpr.repo, (None, None))
+        for i, mpr in acc_prs_to_check:
+            deploy_sha, deploy_created_at = acc_deploy_sha_by_repo.get(mpr.repo, (None, None))
             compare_status: str | None = None
             if deploy_sha and mpr.merge_commit_sha:
                 try:
@@ -332,11 +334,43 @@ class GitHubTrackerApp(App):
                         mpr.repo, mpr.merge_commit_sha, deploy_sha
                     )
                 except Exception as e:
-                    logger.error("Error comparing commits for PR #%d: %s", mpr.number, e)
+                    logger.error("Error comparing commits for PR #%d (ACC): %s", mpr.number, e)
             new_status = compute_deploy_status(
                 mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
             )
             self._merged_prs[i] = replace(mpr, acc_deploy=new_status)
+
+        # Check PRD deployment status for repos with merged PRs
+        prd_prs_to_check = [
+            (i, mpr) for i, mpr in enumerate(self._merged_prs)
+            if mpr.prd_deploy != PrdDeployStatus.PRD_DEPLOYED and mpr.merge_commit_sha is not None
+        ]
+        prd_repos = {mpr.repo for _, mpr in prd_prs_to_check}
+        prd_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
+        for repo in prd_repos:
+            try:
+                sha, created_at = await self.github_client.fetch_latest_deployment_sha(
+                    repo, self.config.prd_deploy_environment
+                )
+                prd_deploy_sha_by_repo[repo] = (sha, created_at)
+            except Exception as e:
+                logger.error("Error fetching PRD deployment for %s: %s", repo, e)
+                prd_deploy_sha_by_repo[repo] = (None, None)
+
+        for i, mpr in prd_prs_to_check:
+            deploy_sha, deploy_created_at = prd_deploy_sha_by_repo.get(mpr.repo, (None, None))
+            compare_status: str | None = None
+            if deploy_sha and mpr.merge_commit_sha:
+                try:
+                    compare_status = await self.github_client.compare_commits(
+                        mpr.repo, mpr.merge_commit_sha, deploy_sha
+                    )
+                except Exception as e:
+                    logger.error("Error comparing commits for PR #%d (PRD): %s", mpr.number, e)
+            new_status = compute_prd_deploy_status(
+                mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
+            )
+            self._merged_prs[i] = replace(mpr, prd_deploy=new_status)
 
         # Filter expired merged PRs
         self._merged_prs = filter_expired_merged_prs(
@@ -605,24 +639,26 @@ class GitHubTrackerApp(App):
 
             # Re-read merged PRs from table after backfill
             merged_prs_in_table = [pr for pr in table.pull_requests if pr.merged_at is not None]
-            prs_to_check = [
+
+            # Check ACC deployment status
+            acc_prs_to_check = [
                 mpr for mpr in merged_prs_in_table
                 if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
             ]
-            repos_with_merged = {mpr.repo for mpr in prs_to_check}
-            deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
-            for repo in repos_with_merged:
+            acc_repos = {mpr.repo for mpr in acc_prs_to_check}
+            acc_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
+            for repo in acc_repos:
                 try:
                     sha, created_at = await self.github_client.fetch_latest_deployment_sha(
                         repo, self.config.acc_deploy_environment
                     )
-                    deploy_sha_by_repo[repo] = (sha, created_at)
+                    acc_deploy_sha_by_repo[repo] = (sha, created_at)
                 except Exception as e:
-                    logger.error("Error fetching deployment for %s: %s", repo, e)
-                    deploy_sha_by_repo[repo] = (None, None)
+                    logger.error("Error fetching ACC deployment for %s: %s", repo, e)
+                    acc_deploy_sha_by_repo[repo] = (None, None)
 
-            for mpr in prs_to_check:
-                deploy_sha, deploy_created_at = deploy_sha_by_repo.get(mpr.repo, (None, None))
+            for mpr in acc_prs_to_check:
+                deploy_sha, deploy_created_at = acc_deploy_sha_by_repo.get(mpr.repo, (None, None))
                 compare_status: str | None = None
                 if deploy_sha and mpr.merge_commit_sha:
                     try:
@@ -630,11 +666,50 @@ class GitHubTrackerApp(App):
                             mpr.repo, mpr.merge_commit_sha, deploy_sha
                         )
                     except Exception as e:
-                        logger.error("Error comparing commits for PR #%d: %s", mpr.number, e)
+                        logger.error("Error comparing commits for PR #%d (ACC): %s", mpr.number, e)
                 new_status = compute_deploy_status(
                     mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
                 )
                 updated_mpr = replace(mpr, acc_deploy=new_status)
+                self._update_pr_in_tables(updated_mpr)
+                for j, m in enumerate(self._merged_prs):
+                    if m.number == mpr.number and m.repo == mpr.repo:
+                        self._merged_prs[j] = updated_mpr
+                        break
+
+            # Check PRD deployment status
+            # Re-read merged PRs from table after ACC updates
+            merged_prs_in_table = [pr for pr in table.pull_requests if pr.merged_at is not None]
+            prd_prs_to_check = [
+                mpr for mpr in merged_prs_in_table
+                if mpr.prd_deploy != PrdDeployStatus.PRD_DEPLOYED and mpr.merge_commit_sha is not None
+            ]
+            prd_repos = {mpr.repo for mpr in prd_prs_to_check}
+            prd_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
+            for repo in prd_repos:
+                try:
+                    sha, created_at = await self.github_client.fetch_latest_deployment_sha(
+                        repo, self.config.prd_deploy_environment
+                    )
+                    prd_deploy_sha_by_repo[repo] = (sha, created_at)
+                except Exception as e:
+                    logger.error("Error fetching PRD deployment for %s: %s", repo, e)
+                    prd_deploy_sha_by_repo[repo] = (None, None)
+
+            for mpr in prd_prs_to_check:
+                deploy_sha, deploy_created_at = prd_deploy_sha_by_repo.get(mpr.repo, (None, None))
+                compare_status: str | None = None
+                if deploy_sha and mpr.merge_commit_sha:
+                    try:
+                        compare_status = await self.github_client.compare_commits(
+                            mpr.repo, mpr.merge_commit_sha, deploy_sha
+                        )
+                    except Exception as e:
+                        logger.error("Error comparing commits for PR #%d (PRD): %s", mpr.number, e)
+                new_status = compute_prd_deploy_status(
+                    mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
+                )
+                updated_mpr = replace(mpr, prd_deploy=new_status)
                 self._update_pr_in_tables(updated_mpr)
                 for j, m in enumerate(self._merged_prs):
                     if m.number == mpr.number and m.repo == mpr.repo:

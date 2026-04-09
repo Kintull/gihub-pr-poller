@@ -7,13 +7,16 @@ from rich.text import Text
 from github_tracker.models import (
     ACC_DEPLOY_SYMBOLS,
     CI_SYMBOLS,
+    PRD_DEPLOY_SYMBOLS,
     SPINNER_FRAMES,
     CIStatus,
     DeployStatus,
     PRLabel,
+    PrdDeployStatus,
     PullRequest,
     acc_deploy_display,
     ci_display,
+    prd_deploy_display,
 )
 from github_tracker.theme import Color
 
@@ -168,6 +171,57 @@ class TestAccDeploySymbols:
                 assert status in ACC_DEPLOY_SYMBOLS
 
 
+class TestPrdDeployStatus:
+    def test_enum_values(self):
+        assert PrdDeployStatus.PRD_DEPLOYING.value == "prd_deploying"
+        assert PrdDeployStatus.PRD_DEPLOYED.value == "prd_deployed"
+        assert PrdDeployStatus.PRD_ARGO.value == "prd_argo"
+        assert PrdDeployStatus.NONE.value == "none"
+
+    def test_from_value(self):
+        assert PrdDeployStatus("prd_deploying") == PrdDeployStatus.PRD_DEPLOYING
+        assert PrdDeployStatus("prd_argo") == PrdDeployStatus.PRD_ARGO
+        assert PrdDeployStatus("none") == PrdDeployStatus.NONE
+
+
+class TestPrdDeployDisplay:
+    def test_deployed(self):
+        result = prd_deploy_display(PrdDeployStatus.PRD_DEPLOYED)
+        assert isinstance(result, Text)
+        assert result.plain == "✓"
+        assert result.style == Color.GREEN
+
+    def test_none(self):
+        assert prd_deploy_display(PrdDeployStatus.NONE) == "\u2014"
+
+    def test_deploying_spinner_index_0(self):
+        assert prd_deploy_display(PrdDeployStatus.PRD_DEPLOYING, 0) == SPINNER_FRAMES[0]
+
+    def test_deploying_spinner_index_wraps(self):
+        idx = len(SPINNER_FRAMES) + 3
+        assert prd_deploy_display(PrdDeployStatus.PRD_DEPLOYING, idx) == SPINNER_FRAMES[3]
+
+    def test_deploying_default_index(self):
+        assert prd_deploy_display(PrdDeployStatus.PRD_DEPLOYING) == SPINNER_FRAMES[0]
+
+    def test_prd_argo_shows_spinner_and_argo(self):
+        assert prd_deploy_display(PrdDeployStatus.PRD_ARGO, 0) == f"{SPINNER_FRAMES[0]}ARGO"
+
+    def test_prd_argo_spinner_wraps(self):
+        idx = len(SPINNER_FRAMES) + 2
+        assert prd_deploy_display(PrdDeployStatus.PRD_ARGO, idx) == f"{SPINNER_FRAMES[2]}ARGO"
+
+    def test_prd_argo_ignores_completed_total(self):
+        assert prd_deploy_display(PrdDeployStatus.PRD_ARGO, 0, completed=5, total=10) == f"{SPINNER_FRAMES[0]}ARGO"
+
+
+class TestPrdDeploySymbols:
+    def test_all_non_deploying_statuses_have_symbols(self):
+        for status in PrdDeployStatus:
+            if status not in (PrdDeployStatus.PRD_DEPLOYING, PrdDeployStatus.PRD_ARGO):
+                assert status in PRD_DEPLOY_SYMBOLS
+
+
 class TestPRLabel:
     def test_enum_values(self):
         assert PRLabel.AUTHOR.value == "author"
@@ -263,6 +317,23 @@ class TestPullRequest:
             repo="o/r",
         )
         assert pr.acc_deploy == DeployStatus.NONE
+
+    def test_default_prd_deploy(self):
+        pr = PullRequest(
+            number=1,
+            title="Fix bug",
+            url="https://github.com/o/r/pull/1",
+            branch_name="fix-bug",
+            comment_count=0,
+            approval_count=0,
+            ci_status=CIStatus.UNKNOWN,
+            jira_ticket=None,
+            jira_url=None,
+            author="bob",
+            updated_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            repo="o/r",
+        )
+        assert pr.prd_deploy == PrdDeployStatus.NONE
 
     def test_default_merged_at(self):
         pr = PullRequest(

@@ -12,7 +12,7 @@ import pytest
 from github_tracker.app import GitHubTrackerApp, HelpOverlay
 from github_tracker.config import Config
 from github_tracker.github_client import GitHubClient
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 from github_tracker.widgets.header import TrackerHeader
 from github_tracker.widgets.pr_table import PRTable
 from github_tracker.widgets.status_bar import StatusBar
@@ -504,7 +504,7 @@ class TestMergeDetection:
 
     @pytest.mark.asyncio
     async def test_deployment_sha_fetched_for_merged_prs(self):
-        """Deployment SHA is fetched for repos with merged PRs."""
+        """Deployment SHA is fetched for repos with merged PRs (ACC + PRD)."""
         from datetime import datetime, timezone as tz
         merged_at = datetime(2024, 6, 15, 14, 0, 0, tzinfo=tz.utc)
         merged = [make_pr(
@@ -513,6 +513,7 @@ class TestMergeDetection:
             merged_at=merged_at,
             merge_commit_sha="abc123",
             acc_deploy=DeployStatus.ACC_DEPLOYING,
+            prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
         )]
         client = make_mock_client(raw_prs=[])
         client.fetch_latest_deployment_sha = AsyncMock(return_value=(None, None))
@@ -523,7 +524,8 @@ class TestMergeDetection:
                     await pilot.pause()
                     await pilot.app.workers.wait_for_complete()
                     await pilot.pause()
-                    client.fetch_latest_deployment_sha.assert_called_once()
+                    # Called twice: once for ACC (acceptance), once for PRD (production)
+                    assert client.fetch_latest_deployment_sha.call_count == 2
 
     @pytest.mark.asyncio
     async def test_deployment_error_handled(self):
@@ -575,7 +577,7 @@ class TestMergeDetection:
 
     @pytest.mark.asyncio
     async def test_compare_commits_called_for_merged_pr_with_deploy_sha(self):
-        """compare_commits is called when deployment SHA is found."""
+        """compare_commits is called when deployment SHA is found (ACC + PRD)."""
         from datetime import datetime, timezone as tz
         merged_at = datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz.utc)
         merged = [make_pr(
@@ -584,6 +586,7 @@ class TestMergeDetection:
             merged_at=merged_at,
             merge_commit_sha="pr_sha_123",
             acc_deploy=DeployStatus.ACC_DEPLOYING,
+            prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
         )]
         client = make_mock_client(raw_prs=[])
         deploy_created = datetime(2024, 6, 15, 13, 0, 0, tzinfo=tz.utc)
@@ -596,7 +599,8 @@ class TestMergeDetection:
                     await pilot.pause()
                     await pilot.app.workers.wait_for_complete()
                     await pilot.pause()
-                    client.compare_commits.assert_called_once_with("owner/repo", "pr_sha_123", "deploy_sha_456")
+                    # Called twice: once for ACC, once for PRD
+                    assert client.compare_commits.call_count == 2
 
     @pytest.mark.asyncio
     async def test_compare_commits_error_handled(self):
@@ -625,7 +629,7 @@ class TestMergeDetection:
 
     @pytest.mark.asyncio
     async def test_deployed_pr_not_rechecked(self):
-        """Already-deployed PRs are not re-checked via deployment API."""
+        """Already-deployed PRs (both ACC + PRD) are not re-checked via deployment API."""
         from datetime import datetime, timezone as tz
         merged_at = datetime(2024, 6, 15, 12, 0, 0, tzinfo=tz.utc)
         merged = [make_pr(
@@ -634,6 +638,7 @@ class TestMergeDetection:
             merged_at=merged_at,
             merge_commit_sha="abc123",
             acc_deploy=DeployStatus.ACC_DEPLOYED,
+            prd_deploy=PrdDeployStatus.PRD_DEPLOYED,
         )]
         client = make_mock_client(raw_prs=[])
         with patch("github_tracker.app.load_state", return_value=([], merged)):

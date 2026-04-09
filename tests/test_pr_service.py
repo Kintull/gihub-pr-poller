@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from github_tracker.models import DeployStatus, PRLabel
+from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus
 from github_tracker.pr_service import (
     compute_ci_progress,
     compute_deploy_status,
     compute_phase1_labels,
     compute_phase2_labels,
+    compute_prd_deploy_status,
     compute_thread_counts,
     compute_user_approved,
     filter_expired_merged_prs,
@@ -342,6 +343,70 @@ class TestComputeDeployStatus:
         assert compute_deploy_status(pr, "ahead", None, 20) == DeployStatus.ACC_DEPLOYED
 
 
+class TestComputePrdDeployStatus:
+    def test_no_merged_at_returns_none(self):
+        pr = make_pr(merged_at=None, merge_commit_sha="abc123")
+        assert compute_prd_deploy_status(pr, "behind", None, 20) == PrdDeployStatus.NONE
+
+    def test_no_merge_commit_sha_returns_deploying(self):
+        pr = make_pr(
+            merged_at=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
+            merge_commit_sha=None,
+        )
+        assert compute_prd_deploy_status(pr, "behind", None, 20) == PrdDeployStatus.PRD_DEPLOYING
+
+    def test_ahead_past_cooldown_returns_deployed(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=2),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(hours=1)
+        assert compute_prd_deploy_status(pr, "ahead", deploy_created, 20) == PrdDeployStatus.PRD_DEPLOYED
+
+    def test_identical_past_cooldown_returns_deployed(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=2),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(hours=1)
+        assert compute_prd_deploy_status(pr, "identical", deploy_created, 20) == PrdDeployStatus.PRD_DEPLOYED
+
+    def test_ahead_within_cooldown_returns_prd_argo(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        deploy_created = now - timedelta(minutes=5)
+        assert compute_prd_deploy_status(pr, "ahead", deploy_created, 20) == PrdDeployStatus.PRD_ARGO
+
+    def test_behind_returns_deploying(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_prd_deploy_status(pr, "behind", now - timedelta(hours=1), 20) == PrdDeployStatus.PRD_DEPLOYING
+
+    def test_none_compare_status_returns_deploying(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_prd_deploy_status(pr, None, None, 20) == PrdDeployStatus.PRD_DEPLOYING
+
+    def test_ahead_no_deploy_created_at_returns_deployed(self):
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(
+            merged_at=now - timedelta(hours=1),
+            merge_commit_sha="abc123",
+        )
+        assert compute_prd_deploy_status(pr, "ahead", None, 20) == PrdDeployStatus.PRD_DEPLOYED
+
+
 class TestComputeUserApproved:
     def test_empty_username_returns_false(self):
         reviews = [{"state": "APPROVED", "user": {"login": "alice"}}]
@@ -399,13 +464,15 @@ class TestFilterExpiredMergedPrs:
 
     def test_keeps_deployed_within_retention(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(number=1, merged_at=now - timedelta(hours=12), acc_deploy=DeployStatus.ACC_DEPLOYED)
+        pr = make_pr(number=1, merged_at=now - timedelta(hours=12),
+                     acc_deploy=DeployStatus.ACC_DEPLOYED, prd_deploy=PrdDeployStatus.PRD_DEPLOYED)
         result = filter_expired_merged_prs([pr], retention_days=2)
         assert len(result) == 1
 
     def test_removes_deployed_past_retention(self):
         now = datetime.now(tz=timezone.utc)
-        pr = make_pr(number=1, merged_at=now - timedelta(days=5), acc_deploy=DeployStatus.ACC_DEPLOYED)
+        pr = make_pr(number=1, merged_at=now - timedelta(days=5),
+                     acc_deploy=DeployStatus.ACC_DEPLOYED, prd_deploy=PrdDeployStatus.PRD_DEPLOYED)
         result = filter_expired_merged_prs([pr], retention_days=2)
         assert len(result) == 0
 
@@ -414,12 +481,30 @@ class TestFilterExpiredMergedPrs:
         result = filter_expired_merged_prs([pr], retention_days=2)
         assert len(result) == 1
 
+    def test_keeps_acc_deployed_prd_not_deployed(self):
+        """Keep PR if ACC is deployed but PRD is still deploying."""
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(number=1, merged_at=now - timedelta(days=5),
+                     acc_deploy=DeployStatus.ACC_DEPLOYED, prd_deploy=PrdDeployStatus.PRD_DEPLOYING)
+        result = filter_expired_merged_prs([pr], retention_days=2)
+        assert len(result) == 1
+
+    def test_keeps_prd_deployed_acc_not_deployed(self):
+        """Keep PR if PRD is deployed but ACC is still deploying."""
+        now = datetime.now(tz=timezone.utc)
+        pr = make_pr(number=1, merged_at=now - timedelta(days=5),
+                     acc_deploy=DeployStatus.ACC_DEPLOYING, prd_deploy=PrdDeployStatus.PRD_DEPLOYED)
+        result = filter_expired_merged_prs([pr], retention_days=2)
+        assert len(result) == 1
+
     def test_mixed(self):
         now = datetime.now(tz=timezone.utc)
         prs = [
-            make_pr(number=1, merged_at=now - timedelta(days=5), acc_deploy=DeployStatus.ACC_DEPLOYED),
+            make_pr(number=1, merged_at=now - timedelta(days=5),
+                    acc_deploy=DeployStatus.ACC_DEPLOYED, prd_deploy=PrdDeployStatus.PRD_DEPLOYED),
             make_pr(number=2, merged_at=now - timedelta(hours=6), acc_deploy=DeployStatus.ACC_DEPLOYING),
-            make_pr(number=3, merged_at=now - timedelta(hours=12), acc_deploy=DeployStatus.ACC_DEPLOYED),
+            make_pr(number=3, merged_at=now - timedelta(hours=12),
+                    acc_deploy=DeployStatus.ACC_DEPLOYED, prd_deploy=PrdDeployStatus.PRD_DEPLOYED),
         ]
         result = filter_expired_merged_prs(prs, retention_days=2)
         assert [p.number for p in result] == [2, 3]

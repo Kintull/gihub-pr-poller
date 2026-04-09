@@ -9,10 +9,10 @@ from rich.style import Style
 from rich.text import Text
 from textual.widgets import DataTable
 
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest, acc_deploy_display, ci_display
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest, acc_deploy_display, ci_display, prd_deploy_display
 from github_tracker.theme import Color
 
-COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "Jira")
+COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "PRD", "Jira")
 
 
 class PRTable(DataTable):
@@ -60,13 +60,15 @@ class PRTable(DataTable):
         self._update_row(pr)
 
     def advance_spinner(self) -> None:
-        """Advance spinner animation frame and update running CI / deploying ACC cells."""
+        """Advance spinner animation frame and update running CI / deploying ACC / deploying PRD cells."""
         self._spinner_index += 1
         for pr in self._pull_requests:
             if pr.ci_status == CIStatus.RUNNING:
                 self.update_cell(str(pr.number), "CI", ci_display(pr.ci_status, self._spinner_index, pr.ci_completed_steps, pr.ci_total_steps))
             if pr.acc_deploy in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO):
                 self.update_cell(str(pr.number), "ACC", acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps))
+            if pr.prd_deploy in (PrdDeployStatus.PRD_DEPLOYING, PrdDeployStatus.PRD_ARGO):
+                self.update_cell(str(pr.number), "PRD", prd_deploy_display(pr.prd_deploy, self._spinner_index, pr.prd_completed_steps, pr.prd_total_steps))
 
     def _row_values(self, pr: PullRequest) -> tuple:
         """Build the cell values for a PR row."""
@@ -103,6 +105,7 @@ class PRTable(DataTable):
             else:
                 comment_text = Text(str(unresolved), style=Color.YELLOW)
         acc_text = acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps)
+        prd_text = prd_deploy_display(pr.prd_deploy, self._spinner_index, pr.prd_completed_steps, pr.prd_total_steps)
         jira_text = pr.jira_ticket or "\u2014"
         return (
             number_text,
@@ -112,6 +115,7 @@ class PRTable(DataTable):
             approval_text,
             ci_text,
             acc_text,
+            prd_text,
             jira_text,
         )
 
