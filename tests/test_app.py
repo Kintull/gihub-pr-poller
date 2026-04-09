@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from github_tracker.app import GitHubTrackerApp, HelpOverlay
+from github_tracker.app import GitHubTrackerApp, HelpOverlay, _parse_version_tuple
 from github_tracker.config import Config
 from github_tracker.github_client import GitHubClient
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PullRequest
@@ -1623,3 +1624,64 @@ class TestMain:
                             from github_tracker.__main__ import main
                             main()
                         assert exc_info.value.code == 0
+
+    def test_app_crash_reraises(self):
+        with patch("sys.argv", ["github-tracker"]):
+            with patch("github_tracker.__main__.DEFAULT_CONFIG_PATH") as mock_path:
+                mock_path.exists.return_value = True
+                with patch("github_tracker.__main__.setup_logging"):
+                    with patch("github_tracker.__main__.load_config", return_value=Config()):
+                        with patch("github_tracker.__main__.get_gh_token", return_value="token"):
+                            with patch("github_tracker.__main__.GitHubClient"):
+                                with patch("github_tracker.__main__.GitHubTrackerApp") as mock_app_cls:
+                                    mock_app_instance = MagicMock()
+                                    mock_app_instance.run.side_effect = RuntimeError("boom")
+                                    mock_app_cls.return_value = mock_app_instance
+                                    with pytest.raises(RuntimeError, match="boom"):
+                                        from github_tracker.__main__ import main
+                                        main()
+
+
+class TestParseVersionTuple:
+    def test_normal_version(self):
+        assert _parse_version_tuple("1.2.3") == (1, 2, 3)
+
+    def test_invalid_version_returns_zero(self):
+        assert _parse_version_tuple("not-a-version") == (0,)
+
+    def test_none_returns_zero(self):
+        assert _parse_version_tuple(None) == (0,)
+
+
+class TestCheckForUpdates:
+    @pytest.mark.asyncio
+    async def test_no_client_returns_early(self):
+        config = make_config()
+        async with GitHubTrackerApp(config=config, github_client=None).run_test() as pilot:
+            app = pilot.app
+            # Directly call _check_for_updates with no client
+            await app._check_for_updates()  # covers line 200
+
+    @pytest.mark.asyncio
+    async def test_package_not_found_returns_early(self):
+        client = make_mock_client()
+        config = make_config()
+        async with GitHubTrackerApp(config=config, github_client=client).run_test() as pilot:
+            app = pilot.app
+            # Reset call count from on_mount worker
+            client.fetch_latest_version.reset_mock()
+            with patch("github_tracker.app.importlib.metadata.version", side_effect=importlib.metadata.PackageNotFoundError):
+                await app._check_for_updates()
+            client.fetch_latest_version.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_available_sets_hint(self):
+        client = make_mock_client()
+        client.fetch_latest_version = AsyncMock(return_value="99.0.0")
+        config = make_config()
+        async with GitHubTrackerApp(config=config, github_client=client).run_test() as pilot:
+            app = pilot.app
+            with patch("github_tracker.app.importlib.metadata.version", return_value="0.0.1"):
+                await app._check_for_updates()
+            header = app.query_one(TrackerHeader)
+            assert "99.0.0" in header.update_hint

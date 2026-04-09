@@ -398,6 +398,109 @@ class TestFetchLatestDeploymentSha:
         sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
         assert sha == "second"
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_statuses_api_error_skips_deployment(self, client):
+        """When fetching statuses fails, deployment is skipped."""
+        deployments = [
+            {"id": 100, "sha": "abc123", "created_at": "2024-06-15T13:00:00Z"},
+        ]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments/100/statuses"
+        ).mock(return_value=httpx.Response(500, json={"message": "Internal Server Error"}))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+        assert created_at is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_statuses_not_a_list_skips_deployment(self, client):
+        """When statuses response is not a list, deployment is skipped."""
+        deployments = [
+            {"id": 100, "sha": "abc123", "created_at": "2024-06-15T13:00:00Z"},
+        ]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments/100/statuses"
+        ).mock(return_value=httpx.Response(200, json={"not": "a list"}))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha is None
+        assert created_at is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_invalid_created_at_returns_none_timestamp(self, client):
+        """When created_at is invalid, the sha is returned but created_at is None."""
+        deployments = [
+            {"id": 100, "sha": "abc123", "created_at": "not-a-date"},
+        ]
+        statuses = [{"state": "success"}]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments?environment=acceptance&per_page=5"
+        ).mock(return_value=httpx.Response(200, json=deployments))
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/deployments/100/statuses"
+        ).mock(return_value=httpx.Response(200, json=statuses))
+        sha, created_at = await client.fetch_latest_deployment_sha("owner/repo", "acceptance")
+        assert sha == "abc123"
+        assert created_at is None
+
+
+class TestFetchLatestVersion:
+    @pytest.fixture
+    def client(self):
+        return GitHubClient(token="test-token")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_returns_version(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/tags?per_page=1").mock(
+            return_value=httpx.Response(200, json=[{"name": "v1.2.3"}])
+        )
+        result = await client.fetch_latest_version("owner/repo")
+        assert result == "1.2.3"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_empty_tags_returns_none(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/tags?per_page=1").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        result = await client.fetch_latest_version("owner/repo")
+        assert result is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_api_error_returns_none(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/tags?per_page=1").mock(
+            return_value=httpx.Response(500, json={"message": "error"})
+        )
+        result = await client.fetch_latest_version("owner/repo")
+        assert result is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_empty_tag_name_returns_none(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/tags?per_page=1").mock(
+            return_value=httpx.Response(200, json=[{"name": ""}])
+        )
+        result = await client.fetch_latest_version("owner/repo")
+        assert result is None
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_not_a_list_returns_none(self, client):
+        respx.get(f"{GITHUB_API}/repos/owner/repo/tags?per_page=1").mock(
+            return_value=httpx.Response(200, json={"message": "ok"})
+        )
+        result = await client.fetch_latest_version("owner/repo")
+        assert result is None
+
 
 class TestCompareCommits:
     @pytest.fixture
