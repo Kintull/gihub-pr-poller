@@ -47,3 +47,6 @@ htmlcov/
 
 # Investigation notes
 investigation-*.md
+
+# Local scripts
+scripts/
