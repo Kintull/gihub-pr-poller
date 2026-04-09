@@ -41,3 +41,9 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+
+# Tool versions (asdf/mise)
+.tool-versions
+
+# Investigation notes
+investigation-*.md

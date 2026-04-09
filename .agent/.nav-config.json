@@ -1,0 +1,8 @@
+{
+  "version": "6.1.0",
+  "features": {
+    "knowledge_graph": true,
+    "user_profile": true,
+    "loop_mode": true
+  }
+}
