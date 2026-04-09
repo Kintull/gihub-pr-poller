@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import logging
 import webbrowser
@@ -15,18 +14,18 @@ from textual.containers import Container
 from textual.widgets import DataTable, Static
 
 from github_tracker.config import Config
-from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
-from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
-from github_tracker.pr_service import (
-    compute_ci_progress,
-    compute_deploy_status,
-    compute_phase1_labels,
-    compute_phase2_labels,
-    compute_prd_deploy_status,
-    compute_thread_counts,
-    compute_user_approved,
-    filter_expired_merged_prs,
-    group_prs,
+from github_tracker.deploy_tracker import (
+    backfill_merge_commit_shas,
+    detect_newly_merged_prs,
+    update_deploy_statuses,
+)
+from github_tracker.github_client import GitHubClient
+from github_tracker.models import PRLabel, PrdDeployStatus, PullRequest
+from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, group_prs
+from github_tracker.refresh import (
+    backfill_pr_details,
+    fetch_pr_lists,
+    refresh_open_pr_details,
 )
 from github_tracker.state import load_state, save_state
 from github_tracker.widgets.header import TrackerHeader
@@ -215,10 +214,6 @@ class GitHubTrackerApp(App):
         header = self.query_one(TrackerHeader)
         header.status_text = "Loading PR list..."
 
-        # Phase 1: Fetch PR lists from all repos (fast — single API call per repo)
-        all_prs: list[PullRequest] = []
-        raw_data: list[tuple[str, dict]] = []
-
         _my = self.query_one("#my-pr-table", PRTable)
         _other = self.query_one("#other-pr-table", PRTable)
 
@@ -229,116 +224,34 @@ class GitHubTrackerApp(App):
             (p.number, p.repo) for p in _other.pull_requests
             if PRLabel.FAVOURITE in p.labels
         }
-
-        # known_keys: all PRs seen in the previous load (both My and Others)
         known_keys = {(p.number, p.repo) for p in self._previous_open_prs}
 
-        # Track new PRs with no Phase 1 interest (candidates for Phase 2 auto-FAVOURITE)
-        new_pr_keys: set[tuple[int, str]] = set()
-
-        for repo in self.config.github_repos:
-            try:
-                logger.info("Fetching PR list for repo: %s", repo)
-                raw_prs = await self.github_client.fetch_open_prs(repo)
-                for raw_pr in raw_prs:
-                    pr = self.github_client.parse_pr_basic(
-                        raw_pr, repo, self.config.jira_base_url
-                    )
-                    labels = compute_phase1_labels(
-                        pr, raw_pr, self.config.github_username
-                    )
-                    key = (pr.number, repo)
-                    if key in favourite_keys:
-                        # Preserve existing FAVOURITE (known favourite or migration)
-                        labels = labels | {PRLabel.FAVOURITE}
-                    elif key not in known_keys:
-                        # New PR: auto-follow if user has natural interest
-                        if labels:  # any Phase 1 interest label
-                            labels = labels | {PRLabel.FAVOURITE}
-                        else:
-                            new_pr_keys.add(key)  # no interest yet; check again in Phase 2
-                    # else: known PR not in favourite_keys → user unfollowed → no FAVOURITE
-                    pr = replace(pr, labels=labels)
-                    all_prs.append(pr)
-                    raw_data.append((repo, raw_pr))
-                logger.info("Got %d PRs from %s", len(raw_prs), repo)
-            except Exception as e:
-                logger.error("Error fetching PR list for %s: %s", repo, e, exc_info=True)
-                self.notify(f"Error fetching {repo}: {e}", severity="error")
-
-        all_prs.sort(key=lambda p: p.updated_at, reverse=True)
-        raw_data.sort(
-            key=lambda item: item[1].get("updated_at", ""), reverse=True
+        # Phase 1: Fetch PR lists from all repos
+        all_prs, raw_data, new_pr_keys = await fetch_pr_lists(
+            repos=self.config.github_repos,
+            github_client=self.github_client,
+            jira_base_url=self.config.jira_base_url,
+            github_username=self.config.github_username,
+            favourite_keys=favourite_keys,
+            known_keys=known_keys,
+            notify_error=lambda repo, e: self.notify(f"Error fetching {repo}: {e}", severity="error"),
         )
 
         # Detect newly merged PRs
         current_open_numbers = {pr.number for pr in all_prs}
-        for prev_pr in self._previous_open_prs:
-            if prev_pr.number not in current_open_numbers:
-                # PR disappeared — check if it was merged
-                try:
-                    detail = await self.github_client.fetch_pr_detail(prev_pr.repo, prev_pr.number)
-                    merged_at_str = detail.get("merged_at")
-                    if merged_at_str:
-                        merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
-                        merge_commit_sha = detail.get("merge_commit_sha")
-                        merged_pr = replace(
-                            prev_pr,
-                            merged_at=merged_at,
-                            merge_commit_sha=merge_commit_sha,
-                            acc_deploy=DeployStatus.ACC_DEPLOYING,
-                            prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
-                        )
-                        # Avoid duplicates
-                        if not any(m.number == merged_pr.number and m.repo == merged_pr.repo for m in self._merged_prs):
-                            self._merged_prs.append(merged_pr)
-                            logger.info("Detected merged PR #%d in %s", prev_pr.number, prev_pr.repo)
-                except Exception as e:
-                    logger.error("Error checking merge status for PR #%d: %s", prev_pr.number, e)
+        new_merged = await detect_newly_merged_prs(
+            self._previous_open_prs, current_open_numbers, self._merged_prs, self.github_client
+        )
+        # Set PRD_DEPLOYING on newly merged PRs
+        new_merged = [replace(m, prd_deploy=PrdDeployStatus.PRD_DEPLOYING) for m in new_merged]
+        self._merged_prs.extend(new_merged)
 
-        # Backfill merge_commit_sha for merged PRs missing it (pre-migration)
-        for i, mpr in enumerate(self._merged_prs):
-            if mpr.merge_commit_sha is None and mpr.acc_deploy != DeployStatus.ACC_DEPLOYED:
-                try:
-                    detail = await self.github_client.fetch_pr_detail(mpr.repo, mpr.number)
-                    sha = detail.get("merge_commit_sha")
-                    if sha:
-                        self._merged_prs[i] = replace(mpr, merge_commit_sha=sha)
-                        logger.info("Backfilled merge_commit_sha for PR #%d", mpr.number)
-                except Exception as e:
-                    logger.error("Error backfilling merge_commit_sha for PR #%d: %s", mpr.number, e)
-
-        # Check ACC deployment status for repos with merged PRs
-        acc_prs_to_check = [
-            (i, mpr) for i, mpr in enumerate(self._merged_prs)
-            if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
-        ]
-        acc_repos = {mpr.repo for _, mpr in acc_prs_to_check}
-        acc_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
-        for repo in acc_repos:
-            try:
-                sha, created_at = await self.github_client.fetch_latest_deployment_sha(
-                    repo, self.config.acc_deploy_environment
-                )
-                acc_deploy_sha_by_repo[repo] = (sha, created_at)
-            except Exception as e:
-                logger.error("Error fetching ACC deployment for %s: %s", repo, e)
-                acc_deploy_sha_by_repo[repo] = (None, None)
-
-        for i, mpr in acc_prs_to_check:
-            deploy_sha, deploy_created_at = acc_deploy_sha_by_repo.get(mpr.repo, (None, None))
-            compare_status: str | None = None
-            if deploy_sha and mpr.merge_commit_sha:
-                try:
-                    compare_status = await self.github_client.compare_commits(
-                        mpr.repo, mpr.merge_commit_sha, deploy_sha
-                    )
-                except Exception as e:
-                    logger.error("Error comparing commits for PR #%d (ACC): %s", mpr.number, e)
-            new_status = compute_deploy_status(
-                mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
-            )
-            self._merged_prs[i] = replace(mpr, acc_deploy=new_status)
+        # Backfill merge_commit_sha and check ACC deployment status
+        self._merged_prs = await backfill_merge_commit_shas(self._merged_prs, self.github_client)
+        self._merged_prs = await update_deploy_statuses(
+            self._merged_prs, self.github_client,
+            self.config.acc_deploy_environment, self.config.argo_cooldown_minutes,
+        )
 
         # Check PRD deployment status for repos with merged PRs
         prd_prs_to_check = [
@@ -377,7 +290,7 @@ class GitHubTrackerApp(App):
             self._merged_prs, self.config.acc_retention_days
         )
 
-        # Display combined open + merged (deduplicate in case a merged PR reappears as open)
+        # Display combined open + merged (deduplicate)
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
         deduped_open = [p for p in all_prs if (p.number, p.repo) not in merged_keys]
         self._display_grouped_prs(deduped_open + self._merged_prs)
@@ -389,69 +302,20 @@ class GitHubTrackerApp(App):
         save_state(all_prs, self._merged_prs)
 
         # Phase 2: Backfill reviews + CI status for each open PR
-        my_table = self.query_one("#my-pr-table", PRTable)
-        other_table = self.query_one("#other-pr-table", PRTable)
-
-        for i, (repo, raw_pr) in enumerate(raw_data):
-            pr_number = raw_pr["number"]
-            head_sha = raw_pr["head"]["sha"]
-
-            try:
-                reviews, check_runs, pr_detail, threads = await asyncio.gather(
-                    self.github_client.fetch_reviews(repo, pr_number),
-                    self.github_client.fetch_check_runs(repo, head_sha),
-                    self.github_client.fetch_pr_detail(repo, pr_number),
-                    self.github_client.fetch_review_threads(repo, pr_number),
-                )
-            except Exception as e:
-                logger.error("Error loading details for PR #%d: %s", pr_number, e)
-                continue
-
-            approval_count = count_approvals(reviews)
-            ci_status = _aggregate_ci_status(check_runs)
-            ci_completed, ci_total = compute_ci_progress(check_runs)
-            comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
-            user_approved = compute_user_approved(reviews, self.config.github_username)
-            total_threads, unresolved_threads, my_commented, my_unresolved = compute_thread_counts(
-                threads, self.config.github_username
-            )
-
-            # Find the PR in whichever table contains it
-            pr = self._find_pr_in_tables(pr_number)
-            if pr is None:
-                continue
-
-            new_labels = compute_phase2_labels(
-                pr.labels, reviews, self.config.github_username
-            )
-            # Auto-follow new PRs where COMMENTED was just discovered
-            if (pr_number, repo) in new_pr_keys and PRLabel.COMMENTED in new_labels and PRLabel.FAVOURITE not in new_labels:
-                new_labels = new_labels | {PRLabel.FAVOURITE}
-            updated_pr = replace(
-                pr,
-                approval_count=approval_count,
-                ci_status=ci_status,
-                ci_completed_steps=ci_completed,
-                ci_total_steps=ci_total,
-                comment_count=comment_count,
-                labels=new_labels,
-                user_approved=user_approved,
-                total_threads=total_threads,
-                unresolved_threads=unresolved_threads,
-                my_commented_threads=my_commented,
-                my_unresolved_threads=my_unresolved,
-            )
-            self._update_pr_in_tables(updated_pr)
-            # Update in all_prs for final save
-            all_prs[i] = updated_pr
-
-            loaded = i + 1
-            header.status_text = f"{len(all_prs)} PRs — details {loaded}/{len(all_prs)}"
+        all_prs = await backfill_pr_details(
+            raw_data=raw_data,
+            all_prs=all_prs,
+            github_client=self.github_client,
+            github_username=self.config.github_username,
+            new_pr_keys=new_pr_keys,
+            find_pr=self._find_pr_in_tables,
+            update_pr=self._update_pr_in_tables,
+        )
 
         # Re-group after Phase 2 (PRs may move from Other to My when COMMENTED is discovered)
-        # Collect all updated PRs from both tables (includes merged PRs)
+        my_table = self.query_one("#my-pr-table", PRTable)
+        other_table = self.query_one("#other-pr-table", PRTable)
         final_prs = list(my_table.pull_requests) + list(other_table.pull_requests)
-        # Separate open from merged for saving
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
         final_open = [p for p in final_prs if p.merged_at is None and (p.number, p.repo) not in merged_keys]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
@@ -544,48 +408,10 @@ class GitHubTrackerApp(App):
 
     async def _do_refresh_open_prs(self, open_prs: list[PullRequest]) -> None:
         """Fetch fresh detail/reviews/CI/threads for each PR and update tables."""
-        for pr in open_prs:
-            try:
-                pr_detail = await self.github_client.fetch_pr_detail(pr.repo, pr.number)
-                head_sha = (pr_detail.get("head") or {}).get("sha", "")
-                if not head_sha:
-                    continue
-                reviews, check_runs, threads = await asyncio.gather(
-                    self.github_client.fetch_reviews(pr.repo, pr.number),
-                    self.github_client.fetch_check_runs(pr.repo, head_sha),
-                    self.github_client.fetch_review_threads(pr.repo, pr.number),
-                )
-            except Exception as e:
-                logger.error("Error refreshing PR #%d: %s", pr.number, e)
-                continue
-
-            approval_count = count_approvals(reviews)
-            ci_status = _aggregate_ci_status(check_runs)
-            ci_completed, ci_total = compute_ci_progress(check_runs)
-            comment_count = pr_detail.get("comments", 0) + pr_detail.get("review_comments", 0)
-            user_approved = compute_user_approved(reviews, self.config.github_username)
-            total_threads, unresolved_threads, my_commented, my_unresolved = compute_thread_counts(
-                threads, self.config.github_username
-            )
-            phase1_labels = compute_phase1_labels(pr, pr_detail, self.config.github_username)
-            if PRLabel.FAVOURITE in pr.labels:
-                phase1_labels = phase1_labels | {PRLabel.FAVOURITE}
-            new_labels = compute_phase2_labels(phase1_labels, reviews, self.config.github_username)
-            updated_pr = replace(
-                pr,
-                approval_count=approval_count,
-                ci_status=ci_status,
-                ci_completed_steps=ci_completed,
-                ci_total_steps=ci_total,
-                comment_count=comment_count,
-                labels=new_labels,
-                user_approved=user_approved,
-                total_threads=total_threads,
-                unresolved_threads=unresolved_threads,
-                my_commented_threads=my_commented,
-                my_unresolved_threads=my_unresolved,
-            )
-            self._update_pr_in_tables(updated_pr)
+        await refresh_open_pr_details(
+            open_prs, self.github_client, self.config.github_username,
+            self._update_pr_in_tables,
+        )
 
     def _regroup_and_save(self) -> None:
         """Re-group all PRs into my/other tables and persist state."""
@@ -620,62 +446,22 @@ class GitHubTrackerApp(App):
         await self._do_refresh_open_prs(open_prs)
 
         if merged_prs_in_table:
-            # Backfill merge_commit_sha for merged PRs missing it (pre-migration)
-            for mpr in merged_prs_in_table:
-                if mpr.merge_commit_sha is None and mpr.acc_deploy != DeployStatus.ACC_DEPLOYED:
-                    try:
-                        detail = await self.github_client.fetch_pr_detail(mpr.repo, mpr.number)
-                        sha = detail.get("merge_commit_sha")
-                        if sha:
-                            updated = replace(mpr, merge_commit_sha=sha)
-                            self._update_pr_in_tables(updated)
-                            for j, m in enumerate(self._merged_prs):
-                                if m.number == mpr.number and m.repo == mpr.repo:
-                                    self._merged_prs[j] = updated
-                                    break
-                            logger.info("Backfilled merge_commit_sha for PR #%d", mpr.number)
-                    except Exception as e:
-                        logger.error("Error backfilling merge_commit_sha for PR #%d: %s", mpr.number, e)
+            # Backfill merge_commit_sha for merged PRs missing it
+            updated_merged = await backfill_merge_commit_shas(merged_prs_in_table, self.github_client)
+            # Sync backfilled PRs to tables and _merged_prs
+            for updated in updated_merged:
+                self._update_pr_in_tables(updated)
+                self._sync_merged_pr(updated)
 
-            # Re-read merged PRs from table after backfill
-            merged_prs_in_table = [pr for pr in table.pull_requests if pr.merged_at is not None]
-
-            # Check ACC deployment status
-            acc_prs_to_check = [
-                mpr for mpr in merged_prs_in_table
-                if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
-            ]
-            acc_repos = {mpr.repo for mpr in acc_prs_to_check}
-            acc_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
-            for repo in acc_repos:
-                try:
-                    sha, created_at = await self.github_client.fetch_latest_deployment_sha(
-                        repo, self.config.acc_deploy_environment
-                    )
-                    acc_deploy_sha_by_repo[repo] = (sha, created_at)
-                except Exception as e:
-                    logger.error("Error fetching ACC deployment for %s: %s", repo, e)
-                    acc_deploy_sha_by_repo[repo] = (None, None)
-
-            for mpr in acc_prs_to_check:
-                deploy_sha, deploy_created_at = acc_deploy_sha_by_repo.get(mpr.repo, (None, None))
-                compare_status: str | None = None
-                if deploy_sha and mpr.merge_commit_sha:
-                    try:
-                        compare_status = await self.github_client.compare_commits(
-                            mpr.repo, mpr.merge_commit_sha, deploy_sha
-                        )
-                    except Exception as e:
-                        logger.error("Error comparing commits for PR #%d (ACC): %s", mpr.number, e)
-                new_status = compute_deploy_status(
-                    mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
-                )
-                updated_mpr = replace(mpr, acc_deploy=new_status)
-                self._update_pr_in_tables(updated_mpr)
-                for j, m in enumerate(self._merged_prs):
-                    if m.number == mpr.number and m.repo == mpr.repo:
-                        self._merged_prs[j] = updated_mpr
-                        break
+            # Check ACC deployment status (use updated list that has backfilled SHAs)
+            updated_merged = await update_deploy_statuses(
+                updated_merged, self.github_client,
+                self.config.acc_deploy_environment, self.config.argo_cooldown_minutes,
+            )
+            # Sync ACC deploy status updates
+            for updated in updated_merged:
+                self._update_pr_in_tables(updated)
+                self._sync_merged_pr(updated)
 
             # Check PRD deployment status
             # Re-read merged PRs from table after ACC updates
@@ -725,6 +511,13 @@ class GitHubTrackerApp(App):
 
         header.status_text = f"{len(prs)} PRs"
         logger.info("Finished refreshing focused table")
+
+    def _sync_merged_pr(self, updated: PullRequest) -> None:
+        """Update a merged PR in the _merged_prs list."""
+        for j, m in enumerate(self._merged_prs):
+            if m.number == updated.number and m.repo == updated.repo:
+                self._merged_prs[j] = updated
+                break
 
     async def _auto_refresh_my_prs(self) -> None:
         """Auto-refresh My PRs table every MY_PRS_REFRESH_INTERVAL seconds."""
@@ -853,4 +646,3 @@ class GitHubTrackerApp(App):
             self.run_worker(other_table.flash_title(pr.number))
         else:
             self.run_worker(my_table.flash_title(pr.number))
-

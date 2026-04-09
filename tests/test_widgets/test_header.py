@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+from unittest.mock import patch
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
@@ -14,6 +17,20 @@ from github_tracker.widgets.header import (
     _get_version,
     build_banner,
 )
+
+
+class TestGetVersion:
+    def test_returns_version(self):
+        result = _get_version()
+        assert isinstance(result, str)
+        assert result != ""
+
+    def test_fallback_when_not_installed(self):
+        with patch(
+            "github_tracker.widgets.header.importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError,
+        ):
+            assert _get_version() == "0.0.0"
 
 
 class HeaderTestApp(App):
