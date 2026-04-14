@@ -406,12 +406,22 @@ class GitHubTrackerApp(App):
             except Exception:
                 pass
 
-    async def _do_refresh_open_prs(self, open_prs: list[PullRequest]) -> None:
-        """Fetch fresh detail/reviews/CI/threads for each PR and update tables."""
-        await refresh_open_pr_details(
+    async def _do_refresh_open_prs(self, open_prs: list[PullRequest]) -> list[PullRequest]:
+        """Fetch fresh detail/reviews/CI/threads for each PR and update tables.
+
+        Returns list of PRs discovered to be merged during refresh.
+        """
+        discovered_merged = await refresh_open_pr_details(
             open_prs, self.github_client, self.config.github_username,
             self._update_pr_in_tables,
         )
+        if discovered_merged:
+            existing_keys = {(m.number, m.repo) for m in self._merged_prs}
+            for mpr in discovered_merged:
+                if (mpr.number, mpr.repo) not in existing_keys:
+                    self._merged_prs.append(mpr)
+                    self._update_pr_in_tables(mpr)
+        return discovered_merged
 
     def _regroup_and_save(self) -> None:
         """Re-group all PRs into my/other tables and persist state."""
@@ -443,7 +453,8 @@ class GitHubTrackerApp(App):
             len(open_prs), len(merged_prs_in_table),
         )
 
-        await self._do_refresh_open_prs(open_prs)
+        discovered_merged = await self._do_refresh_open_prs(open_prs)
+        merged_prs_in_table = merged_prs_in_table + discovered_merged
 
         if merged_prs_in_table:
             # Backfill merge_commit_sha for merged PRs missing it

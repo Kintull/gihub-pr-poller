@@ -35,6 +35,7 @@ class TestDetectNewlyMergedPrs:
             fetch_pr_detail=AsyncMock(return_value={
                 "merged_at": "2024-06-15T14:00:00Z",
                 "merge_commit_sha": "sha1",
+                "base": {"ref": "main"},
             })
         )
         result = await detect_newly_merged_prs(prev, set(), [], client)
@@ -68,9 +69,23 @@ class TestDetectNewlyMergedPrs:
             fetch_pr_detail=AsyncMock(return_value={
                 "merged_at": "2024-06-15T14:00:00Z",
                 "merge_commit_sha": "sha1",
+                "base": {"ref": "main"},
             })
         )
         result = await detect_newly_merged_prs(prev, set(), existing, client)
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_pr_merged_into_feature_branch(self):
+        prev = [make_pr(number=1, repo="o/r")]
+        client = _make_client(
+            fetch_pr_detail=AsyncMock(return_value={
+                "merged_at": "2024-06-15T14:00:00Z",
+                "merge_commit_sha": "sha1",
+                "base": {"ref": "DEV-123-feature"},
+            })
+        )
+        result = await detect_newly_merged_prs(prev, set(), [], client)
         assert len(result) == 0
 
     @pytest.mark.asyncio

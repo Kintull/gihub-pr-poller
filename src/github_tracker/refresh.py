@@ -6,9 +6,10 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 
 from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
-from github_tracker.models import PRLabel, PullRequest
+from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 from github_tracker.pr_service import (
     compute_ci_progress,
     compute_phase1_labels,
@@ -136,11 +137,29 @@ async def refresh_open_pr_details(
     github_client: GitHubClient,
     github_username: str,
     update_pr: Callable[[PullRequest], None],
-) -> None:
-    """Fetch fresh detail/reviews/CI/threads for each PR and call update_pr."""
+) -> list[PullRequest]:
+    """Fetch fresh detail/reviews/CI/threads for each PR and call update_pr.
+
+    Returns list of PRs discovered to be merged (so callers can move them).
+    """
+    newly_merged: list[PullRequest] = []
     for pr in open_prs:
         try:
             pr_detail = await github_client.fetch_pr_detail(pr.repo, pr.number)
+
+            merged_at_str = pr_detail.get("merged_at")
+            if merged_at_str:
+                merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
+                newly_merged.append(replace(
+                    pr,
+                    merged_at=merged_at,
+                    merge_commit_sha=pr_detail.get("merge_commit_sha"),
+                    acc_deploy=DeployStatus.ACC_DEPLOYING,
+                    prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
+                ))
+                logger.info("Discovered merged PR #%d during refresh", pr.number)
+                continue
+
             head_sha = (pr_detail.get("head") or {}).get("sha", "")
             if not head_sha:
                 continue
@@ -180,3 +199,5 @@ async def refresh_open_pr_details(
             my_unresolved_threads=my_unresolved,
         )
         update_pr(updated_pr)
+
+    return newly_merged

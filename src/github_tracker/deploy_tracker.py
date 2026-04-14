@@ -12,6 +12,8 @@ from github_tracker.pr_service import compute_deploy_status
 
 logger = logging.getLogger("github_tracker.deploy_tracker")
 
+DEPLOY_BRANCHES = {"main", "master", "edge", "acceptance", "staging", "test"}
+
 
 async def detect_newly_merged_prs(
     previous_open_prs: list[PullRequest],
@@ -28,6 +30,13 @@ async def detect_newly_merged_prs(
                 detail = await github_client.fetch_pr_detail(prev_pr.repo, prev_pr.number)
                 merged_at_str = detail.get("merged_at")
                 if merged_at_str:
+                    base_ref = detail.get("base", {}).get("ref", "")
+                    if base_ref not in DEPLOY_BRANCHES:
+                        logger.info(
+                            "PR #%d merged into feature branch %s, skipping",
+                            prev_pr.number, base_ref,
+                        )
+                        continue
                     merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
                     merge_commit_sha = detail.get("merge_commit_sha")
                     merged_pr = replace(
