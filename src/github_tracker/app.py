@@ -17,10 +17,11 @@ from github_tracker.config import Config
 from github_tracker.deploy_tracker import (
     backfill_merge_commit_shas,
     detect_newly_merged_prs,
+    filter_feature_branch_merges,
     update_deploy_statuses,
 )
 from github_tracker.github_client import GitHubClient
-from github_tracker.models import PRLabel, PrdDeployStatus, PullRequest
+from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, group_prs
 from github_tracker.refresh import (
     backfill_pr_details,
@@ -242,11 +243,15 @@ class GitHubTrackerApp(App):
         new_merged = await detect_newly_merged_prs(
             self._previous_open_prs, current_open_numbers, self._merged_prs, self.github_client
         )
-        # Set PRD_DEPLOYING on newly merged PRs
-        new_merged = [replace(m, prd_deploy=PrdDeployStatus.PRD_DEPLOYING) for m in new_merged]
+        # Set PRD_DEPLOYING on newly merged PRs (skip feature-branch merges)
+        new_merged = [
+            replace(m, prd_deploy=PrdDeployStatus.PRD_DEPLOYING) if m.acc_deploy != DeployStatus.NONE else m
+            for m in new_merged
+        ]
         self._merged_prs.extend(new_merged)
 
-        # Backfill merge_commit_sha and check ACC deployment status
+        # Remove PRs merged into feature branches and backfill merge_commit_sha
+        self._merged_prs = await filter_feature_branch_merges(self._merged_prs, self.github_client)
         self._merged_prs = await backfill_merge_commit_shas(self._merged_prs, self.github_client)
         self._merged_prs = await update_deploy_statuses(
             self._merged_prs, self.github_client,
@@ -256,7 +261,8 @@ class GitHubTrackerApp(App):
         # Check PRD deployment status for repos with merged PRs
         prd_prs_to_check = [
             (i, mpr) for i, mpr in enumerate(self._merged_prs)
-            if mpr.prd_deploy != PrdDeployStatus.PRD_DEPLOYED and mpr.merge_commit_sha is not None
+            if mpr.prd_deploy in (PrdDeployStatus.PRD_DEPLOYING, PrdDeployStatus.PRD_ARGO)
+            and mpr.merge_commit_sha is not None
         ]
         prd_repos = {mpr.repo for _, mpr in prd_prs_to_check}
         prd_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
@@ -479,7 +485,8 @@ class GitHubTrackerApp(App):
             merged_prs_in_table = [pr for pr in table.pull_requests if pr.merged_at is not None]
             prd_prs_to_check = [
                 mpr for mpr in merged_prs_in_table
-                if mpr.prd_deploy != PrdDeployStatus.PRD_DEPLOYED and mpr.merge_commit_sha is not None
+                if mpr.prd_deploy in (PrdDeployStatus.PRD_DEPLOYING, PrdDeployStatus.PRD_ARGO)
+                and mpr.merge_commit_sha is not None
             ]
             prd_repos = {mpr.repo for mpr in prd_prs_to_check}
             prd_deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}

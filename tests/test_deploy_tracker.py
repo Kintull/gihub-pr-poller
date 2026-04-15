@@ -10,10 +10,11 @@ import pytest
 from github_tracker.deploy_tracker import (
     backfill_merge_commit_shas,
     detect_newly_merged_prs,
+    filter_feature_branch_merges,
     update_deploy_statuses,
 )
 from github_tracker.github_client import GitHubClient
-from github_tracker.models import DeployStatus
+from github_tracker.models import DeployStatus, PrdDeployStatus
 from tests.conftest import make_pr
 
 
@@ -76,7 +77,7 @@ class TestDetectNewlyMergedPrs:
         assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_skips_pr_merged_into_feature_branch(self):
+    async def test_feature_branch_merge_has_none_deploy_status(self):
         prev = [make_pr(number=1, repo="o/r")]
         client = _make_client(
             fetch_pr_detail=AsyncMock(return_value={
@@ -86,7 +87,8 @@ class TestDetectNewlyMergedPrs:
             })
         )
         result = await detect_newly_merged_prs(prev, set(), [], client)
-        assert len(result) == 0
+        assert len(result) == 1
+        assert result[0].acc_deploy == DeployStatus.NONE
 
     @pytest.mark.asyncio
     async def test_error_handled(self):
@@ -96,6 +98,61 @@ class TestDetectNewlyMergedPrs:
         )
         result = await detect_newly_merged_prs(prev, set(), [], client)
         assert len(result) == 0
+
+
+class TestFilterFeatureBranchMerges:
+    @pytest.mark.asyncio
+    async def test_keeps_pr_merged_into_deploy_branch(self):
+        merged = [make_pr(
+            number=1, repo="o/r",
+            merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        client = _make_client(
+            fetch_pr_detail=AsyncMock(return_value={"base": {"ref": "main"}})
+        )
+        result = await filter_feature_branch_merges(merged, client)
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_sets_none_for_feature_branch_merge(self):
+        merged = [make_pr(
+            number=1, repo="o/r",
+            merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        client = _make_client(
+            fetch_pr_detail=AsyncMock(return_value={"base": {"ref": "DEV-123-feature"}})
+        )
+        result = await filter_feature_branch_merges(merged, client)
+        assert len(result) == 1
+        assert result[0].acc_deploy == DeployStatus.NONE
+        assert result[0].prd_deploy == PrdDeployStatus.NONE
+
+    @pytest.mark.asyncio
+    async def test_skips_already_deployed(self):
+        merged = [make_pr(
+            number=1, repo="o/r",
+            merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            acc_deploy=DeployStatus.ACC_DEPLOYED,
+        )]
+        client = _make_client()
+        result = await filter_feature_branch_merges(merged, client)
+        assert len(result) == 1
+        client.fetch_pr_detail.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keeps_pr_on_api_error(self):
+        merged = [make_pr(
+            number=1, repo="o/r",
+            merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            acc_deploy=DeployStatus.ACC_DEPLOYING,
+        )]
+        client = _make_client(
+            fetch_pr_detail=AsyncMock(side_effect=Exception("network"))
+        )
+        result = await filter_feature_branch_merges(merged, client)
+        assert len(result) == 1
 
 
 class TestBackfillMergeCommitShas:
@@ -133,6 +190,19 @@ class TestBackfillMergeCommitShas:
             merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
             merge_commit_sha=None,
             acc_deploy=DeployStatus.ACC_DEPLOYED,
+        )]
+        client = _make_client()
+        result = await backfill_merge_commit_shas(merged, client)
+        assert result[0].merge_commit_sha is None
+        client.fetch_pr_detail.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_none_deploy_status(self):
+        merged = [make_pr(
+            number=1, repo="o/r",
+            merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            merge_commit_sha=None,
+            acc_deploy=DeployStatus.NONE,
         )]
         client = _make_client()
         result = await backfill_merge_commit_shas(merged, client)
@@ -238,4 +308,17 @@ class TestUpdateDeployStatuses:
         )]
         client = _make_client()
         result = await update_deploy_statuses(merged, client, "acceptance", 20)
+        client.fetch_latest_deployment_sha.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_none_deploy_status(self):
+        merged = [make_pr(
+            number=1, repo="o/r",
+            merged_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            merge_commit_sha="sha1",
+            acc_deploy=DeployStatus.NONE,
+        )]
+        client = _make_client()
+        result = await update_deploy_statuses(merged, client, "acceptance", 20)
+        assert result[0].acc_deploy == DeployStatus.NONE
         client.fetch_latest_deployment_sha.assert_not_called()

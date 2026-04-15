@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from github_tracker.github_client import GitHubClient
-from github_tracker.models import DeployStatus, PullRequest
+from github_tracker.models import DeployStatus, PrdDeployStatus, PullRequest
 from github_tracker.pr_service import compute_deploy_status
 
 logger = logging.getLogger("github_tracker.deploy_tracker")
@@ -31,19 +31,19 @@ async def detect_newly_merged_prs(
                 merged_at_str = detail.get("merged_at")
                 if merged_at_str:
                     base_ref = detail.get("base", {}).get("ref", "")
-                    if base_ref not in DEPLOY_BRANCHES:
+                    is_deploy_branch = base_ref in DEPLOY_BRANCHES
+                    if not is_deploy_branch:
                         logger.info(
-                            "PR #%d merged into feature branch %s, skipping",
+                            "PR #%d merged into feature branch %s, skipping deploy tracking",
                             prev_pr.number, base_ref,
                         )
-                        continue
                     merged_at = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
                     merge_commit_sha = detail.get("merge_commit_sha")
                     merged_pr = replace(
                         prev_pr,
                         merged_at=merged_at,
                         merge_commit_sha=merge_commit_sha,
-                        acc_deploy=DeployStatus.ACC_DEPLOYING,
+                        acc_deploy=DeployStatus.ACC_DEPLOYING if is_deploy_branch else DeployStatus.NONE,
                     )
                     if (merged_pr.number, merged_pr.repo) not in existing_keys:
                         new_merged.append(merged_pr)
@@ -53,6 +53,37 @@ async def detect_newly_merged_prs(
     return new_merged
 
 
+async def filter_feature_branch_merges(
+    merged_prs: list[PullRequest],
+    github_client: GitHubClient,
+) -> list[PullRequest]:
+    """Set deploy status to NONE for PRs merged into feature branches."""
+    result: list[PullRequest] = []
+    for mpr in merged_prs:
+        if mpr.acc_deploy == DeployStatus.ACC_DEPLOYED:
+            result.append(mpr)
+            continue
+        try:
+            detail = await github_client.fetch_pr_detail(mpr.repo, mpr.number)
+            base_ref = detail.get("base", {}).get("ref", "")
+            if base_ref in DEPLOY_BRANCHES:
+                result.append(mpr)
+            else:
+                logger.info(
+                    "PR #%d merged into feature branch %s, skipping deploy tracking",
+                    mpr.number, base_ref,
+                )
+                result.append(replace(
+                    mpr,
+                    acc_deploy=DeployStatus.NONE,
+                    prd_deploy=PrdDeployStatus.NONE,
+                ))
+        except Exception as e:
+            logger.error("Error checking base branch for PR #%d: %s", mpr.number, e)
+            result.append(mpr)
+    return result
+
+
 async def backfill_merge_commit_shas(
     merged_prs: list[PullRequest],
     github_client: GitHubClient,
@@ -60,7 +91,7 @@ async def backfill_merge_commit_shas(
     """Backfill merge_commit_sha for merged PRs missing it. Returns updated list."""
     result = list(merged_prs)
     for i, mpr in enumerate(result):
-        if mpr.merge_commit_sha is None and mpr.acc_deploy != DeployStatus.ACC_DEPLOYED:
+        if mpr.merge_commit_sha is None and mpr.acc_deploy in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO):
             try:
                 detail = await github_client.fetch_pr_detail(mpr.repo, mpr.number)
                 sha = detail.get("merge_commit_sha")
@@ -82,7 +113,7 @@ async def update_deploy_statuses(
     result = list(merged_prs)
     prs_to_check = [
         (i, mpr) for i, mpr in enumerate(result)
-        if mpr.acc_deploy != DeployStatus.ACC_DEPLOYED and mpr.merge_commit_sha is not None
+        if mpr.acc_deploy in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO) and mpr.merge_commit_sha is not None
     ]
     repos_with_merged = {mpr.repo for _, mpr in prs_to_check}
     deploy_sha_by_repo: dict[str, tuple[str | None, datetime | None]] = {}
