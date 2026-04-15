@@ -10,6 +10,7 @@ from rich.text import Text
 from textual.widgets import DataTable
 
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest, acc_deploy_display, ci_display, prd_deploy_display
+from github_tracker.pr_service import PRDisplayItem
 from github_tracker.theme import Color
 
 COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "PRD", "Jira")
@@ -29,6 +30,7 @@ class PRTable(DataTable):
         self._pull_requests: list[PullRequest] = []
         self._pr_index: dict[int, int] = {}
         self._spinner_index: int = 0
+        self._display_items: dict[int, PRDisplayItem] = {}
 
     def on_mount(self) -> None:
         for col in COLUMNS:
@@ -45,10 +47,15 @@ class PRTable(DataTable):
     def pull_requests(self) -> list[PullRequest]:
         return self._pull_requests
 
-    def load_prs(self, prs: list[PullRequest]) -> None:
+    def load_prs(
+        self,
+        prs: list[PullRequest],
+        display_items: dict[int, PRDisplayItem] | None = None,
+    ) -> None:
         """Load pull requests into the table."""
         self._pull_requests = prs
         self._pr_index = {pr.number: i for i, pr in enumerate(prs)}
+        self._display_items = display_items or {}
         self._refresh_rows()
 
     def update_pr(self, pr: PullRequest) -> None:
@@ -75,6 +82,10 @@ class PRTable(DataTable):
         is_author = PRLabel.AUTHOR in pr.labels
         author_text: str | Text = Text(pr.author, style=Color.BLUE) if is_author else pr.author
         title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        display = self._display_items.get(pr.number)
+        if display and display.is_sub_pr:
+            prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "
+            title = prefix + title
         has_interest = bool(pr.labels - {PRLabel.FAVOURITE})
         number_text: str | Text = Text(str(pr.number), style=Color.YELLOW) if has_interest else str(pr.number)
         is_merged = pr.merged_at is not None
@@ -148,6 +159,10 @@ class PRTable(DataTable):
             return
         pr = self._pull_requests[idx]
         base_title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        display = self._display_items.get(pr_number)
+        if display and display.is_sub_pr:
+            prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "
+            base_title = prefix + base_title
         row_key = str(pr_number)
         for i in range(6):
             if pr_number not in self._pr_index:

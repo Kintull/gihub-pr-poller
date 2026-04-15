@@ -269,6 +269,7 @@ class GitHubClient:
             title=title,
             url=raw_pr["html_url"],
             branch_name=branch_name,
+            base_branch=raw_pr["base"]["ref"],
             comment_count=0,
             approval_count=0,
             ci_status=CIStatus.PENDING,
@@ -328,6 +329,7 @@ class GitHubClient:
                     title=title,
                     url=raw_pr["html_url"],
                     branch_name=branch_name,
+                    base_branch=raw_pr["base"]["ref"],
                     comment_count=pr_detail.get("comments", 0)
                     + pr_detail.get("review_comments", 0),
                     approval_count=approval_count,

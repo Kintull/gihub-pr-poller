@@ -3,9 +3,23 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
+
+# Branches that are deployment targets, not feature branches.
+# Kept in sync with deploy_tracker.DEPLOY_BRANCHES.
+_DEPLOY_BRANCHES = {"main", "master", "edge", "acceptance", "staging", "test"}
+
+
+@dataclass
+class PRDisplayItem:
+    """Display metadata for a PR row in the table."""
+
+    pr: PullRequest
+    is_sub_pr: bool
+    is_last_sub_pr: bool
 
 
 def compute_phase1_labels(
@@ -73,6 +87,71 @@ def group_prs(
     other_prs = [pr for pr in prs if PRLabel.FAVOURITE not in pr.labels]
     other_prs.sort(key=lambda pr: 0 if pr.labels - {PRLabel.FAVOURITE} else 1)
     return my_prs, other_prs
+
+
+def order_with_nesting(
+    prs: list[PullRequest],
+) -> tuple[list[PullRequest], dict[int, PRDisplayItem]]:
+    """Reorder PRs so sub-PRs follow their parent feature branch PR.
+
+    A sub-PR is one whose base_branch matches another open PR's branch_name
+    within the same repo, and whose base_branch is not a deploy branch.
+
+    Returns (ordered_prs, display_items) where display_items maps PR number
+    to its display metadata.
+    """
+    # Map (repo, branch_name) -> PR for finding parents
+    branch_to_pr: dict[tuple[str, str], PullRequest] = {}
+    for pr in prs:
+        key = (pr.repo, pr.branch_name)
+        branch_to_pr[key] = pr
+
+    # Find each PR's direct parent
+    parent_of: dict[int, PullRequest] = {}
+    for pr in prs:
+        if pr.base_branch and pr.base_branch not in _DEPLOY_BRANCHES:
+            parent = branch_to_pr.get((pr.repo, pr.base_branch))
+            if parent is not None and parent.number != pr.number:
+                parent_of[pr.number] = parent
+
+    # Walk chains to find root ancestor
+    def find_root(pr: PullRequest) -> PullRequest:
+        visited: set[int] = set()
+        current = pr
+        while current.number in parent_of and current.number not in visited:
+            visited.add(current.number)
+            current = parent_of[current.number]
+        return current
+
+    # Group children under root ancestors
+    children_of: dict[int, list[PullRequest]] = {}
+    child_numbers: set[int] = set()
+    for pr in prs:
+        if pr.number in parent_of:
+            root = find_root(pr)
+            if root.number != pr.number:
+                children_of.setdefault(root.number, []).append(pr)
+                child_numbers.add(pr.number)
+
+    # Build ordered output
+    ordered: list[PullRequest] = []
+    display_items: dict[int, PRDisplayItem] = {}
+
+    for pr in prs:
+        if pr.number in child_numbers:
+            continue
+        ordered.append(pr)
+        display_items[pr.number] = PRDisplayItem(pr=pr, is_sub_pr=False, is_last_sub_pr=False)
+
+        children = children_of.get(pr.number, [])
+        for i, child in enumerate(children):
+            is_last = i == len(children) - 1
+            ordered.append(child)
+            display_items[child.number] = PRDisplayItem(
+                pr=child, is_sub_pr=True, is_last_sub_pr=is_last
+            )
+
+    return ordered, display_items
 
 
 def compute_thread_counts(
