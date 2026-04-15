@@ -15,6 +15,7 @@ from github_tracker.pr_service import (
     compute_user_approved,
     filter_expired_merged_prs,
     group_prs,
+    order_with_nesting,
 )
 from tests.conftest import make_pr, make_review_thread
 
@@ -564,3 +565,104 @@ class TestComputeThreadCounts:
         assert unresolved == 1
         assert my_commented == 0
         assert my_unresolved == 0
+
+
+class TestOrderWithNesting:
+    def test_no_sub_prs_all_target_main(self):
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="main"),
+            make_pr(number=2, branch_name="feat-b", base_branch="main"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [1, 2]
+        assert not display[1].is_sub_pr
+        assert not display[2].is_sub_pr
+
+    def test_one_sub_pr(self):
+        prs = [
+            make_pr(number=10, branch_name="feat-x", base_branch="main"),
+            make_pr(number=11, branch_name="feat-x-part1", base_branch="feat-x"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [10, 11]
+        assert not display[10].is_sub_pr
+        assert display[11].is_sub_pr
+        assert display[11].is_last_sub_pr
+
+    def test_multiple_sub_prs(self):
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="main"),
+            make_pr(number=2, branch_name="feat-a-p1", base_branch="feat-a"),
+            make_pr(number=3, branch_name="feat-a-p2", base_branch="feat-a"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [1, 2, 3]
+        assert not display[1].is_sub_pr
+        assert display[2].is_sub_pr
+        assert not display[2].is_last_sub_pr
+        assert display[3].is_sub_pr
+        assert display[3].is_last_sub_pr
+
+    def test_chain_flattened(self):
+        """C -> B -> A -> main flattens all under A."""
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="main"),
+            make_pr(number=2, branch_name="feat-b", base_branch="feat-a"),
+            make_pr(number=3, branch_name="feat-c", base_branch="feat-b"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [1, 2, 3]
+        assert not display[1].is_sub_pr
+        assert display[2].is_sub_pr
+        assert display[3].is_sub_pr
+        assert display[3].is_last_sub_pr
+
+    def test_orphan_sub_pr_treated_as_regular(self):
+        """Sub-PR whose parent is not in the list stays as regular PR."""
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="main"),
+            make_pr(number=2, branch_name="feat-x-part", base_branch="feat-x"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [1, 2]
+        assert not display[1].is_sub_pr
+        assert not display[2].is_sub_pr
+
+    def test_cross_repo_not_grouped(self):
+        """Same branch name in different repos should not group."""
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="main", repo="org/repo-a"),
+            make_pr(number=2, branch_name="feat-x", base_branch="feat-a", repo="org/repo-b"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [1, 2]
+        assert not display[1].is_sub_pr
+        assert not display[2].is_sub_pr
+
+    def test_deploy_branch_not_treated_as_parent(self):
+        """PR targeting 'master' should not be grouped under a PR whose branch is 'master'."""
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="master"),
+            make_pr(number=2, branch_name="feat-b", base_branch="master"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert not display[1].is_sub_pr
+        assert not display[2].is_sub_pr
+
+    def test_empty_list(self):
+        ordered, display = order_with_nesting([])
+        assert ordered == []
+        assert display == {}
+
+    def test_mixed_grouped_and_ungrouped(self):
+        prs = [
+            make_pr(number=1, branch_name="feat-a", base_branch="main"),
+            make_pr(number=2, branch_name="fix-bug", base_branch="main"),
+            make_pr(number=3, branch_name="feat-a-p1", base_branch="feat-a"),
+        ]
+        ordered, display = order_with_nesting(prs)
+        assert [p.number for p in ordered] == [1, 3, 2]
+        assert not display[1].is_sub_pr
+        assert display[3].is_sub_pr
+        assert display[3].is_last_sub_pr
+        assert not display[2].is_sub_pr

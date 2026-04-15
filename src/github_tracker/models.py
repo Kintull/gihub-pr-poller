@@ -130,6 +130,7 @@ class PullRequest:
     author: str
     updated_at: datetime
     repo: str
+    base_branch: str = field(default="")
     labels: frozenset[PRLabel] = field(default_factory=frozenset)
     acc_deploy: DeployStatus = field(default=DeployStatus.NONE)
     prd_deploy: PrdDeployStatus = field(default=PrdDeployStatus.NONE)

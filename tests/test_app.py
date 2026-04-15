@@ -28,7 +28,7 @@ def make_mock_client(prs: list[PullRequest] | None = None, raw_prs: list[dict] |
     client.parse_pr_basic = MagicMock(side_effect=lambda raw, repo, jira: _make_pr_from_raw(raw, repo))
     client.fetch_reviews = AsyncMock(return_value=[])
     client.fetch_check_runs = AsyncMock(return_value=[])
-    client.fetch_pr_detail = AsyncMock(return_value={"head": {"sha": "abc123"}, "merge_commit_sha": "abc123", "comments": 0, "review_comments": 0})
+    client.fetch_pr_detail = AsyncMock(return_value={"head": {"sha": "abc123"}, "base": {"ref": "main"}, "merge_commit_sha": "abc123", "comments": 0, "review_comments": 0})
     client.fetch_latest_deployment_sha = AsyncMock(return_value=(None, None))
     client.compare_commits = AsyncMock(return_value=None)
     client.fetch_review_threads = AsyncMock(return_value=[])
@@ -42,6 +42,7 @@ def _make_pr_from_raw(raw: dict, repo: str) -> PullRequest:
         title=raw["title"],
         url=raw["html_url"],
         branch_name=raw["head"]["ref"],
+        base_branch=raw.get("base", {}).get("ref", "main"),
         author=raw["user"]["login"],
         repo=repo,
         ci_status=CIStatus.PENDING,
@@ -472,7 +473,7 @@ class TestMergeDetection:
         client = make_mock_client(raw_prs=[])
         # fetch_pr_detail returns merged_at and merge_commit_sha for PR #1
         client.fetch_pr_detail = AsyncMock(
-            return_value={"merged_at": "2024-06-15T14:00:00Z", "merge_commit_sha": "abc123", "comments": 0, "review_comments": 0}
+            return_value={"merged_at": "2024-06-15T14:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "abc123", "comments": 0, "review_comments": 0}
         )
         with patch("github_tracker.app.load_state", return_value=(cached, [])):
             with patch("github_tracker.app.save_state") as mock_save:

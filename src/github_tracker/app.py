@@ -21,7 +21,7 @@ from github_tracker.deploy_tracker import (
 )
 from github_tracker.github_client import GitHubClient
 from github_tracker.models import PRLabel, PrdDeployStatus, PullRequest
-from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, group_prs
+from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, group_prs, order_with_nesting
 from github_tracker.refresh import (
     backfill_pr_details,
     fetch_pr_lists,
@@ -343,8 +343,10 @@ class GitHubTrackerApp(App):
         self._set_section_visible("my", bool(my_prs))
         self._set_section_visible("other", bool(other_prs))
 
-        my_table.load_prs(my_prs)
-        other_table.load_prs(other_prs)
+        my_ordered, my_display = order_with_nesting(my_prs)
+        other_ordered, other_display = order_with_nesting(other_prs)
+        my_table.load_prs(my_ordered, my_display)
+        other_table.load_prs(other_ordered, other_display)
 
         empty_msg.display = not all_prs
 
