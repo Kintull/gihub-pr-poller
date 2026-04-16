@@ -250,7 +250,7 @@ class GitHubTrackerApp(App):
         ]
         self._merged_prs.extend(new_merged)
 
-        # Remove PRs merged into feature branches and backfill merge_commit_sha
+        # Re-check base branches and backfill merge_commit_sha
         self._merged_prs = await filter_feature_branch_merges(self._merged_prs, self.github_client)
         self._merged_prs = await backfill_merge_commit_shas(self._merged_prs, self.github_client)
         self._merged_prs = await update_deploy_statuses(

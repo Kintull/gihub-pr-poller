@@ -477,10 +477,11 @@ class TestFilterExpiredMergedPrs:
         result = filter_expired_merged_prs([pr], retention_days=2)
         assert len(result) == 0
 
-    def test_keeps_none_deploy_status(self):
+    def test_removes_feature_branch_merge(self):
+        """PRs with both deploy statuses NONE (feature-branch merges) are removed."""
         pr = make_pr(number=1, merged_at=None, acc_deploy=DeployStatus.NONE)
         result = filter_expired_merged_prs([pr], retention_days=2)
-        assert len(result) == 1
+        assert len(result) == 0
 
     def test_keeps_acc_deployed_prd_not_deployed(self):
         """Keep PR if ACC is deployed but PRD is still deploying."""

@@ -252,13 +252,17 @@ def filter_expired_merged_prs(
 ) -> list[PullRequest]:
     """Remove deployed PRs past the retention period.
 
-    A merged PR is only removed if both ACC and PRD are fully deployed
-    and the merge time is past the retention cutoff.
+    A merged PR is removed if:
+    - Both ACC and PRD are fully deployed and merge time is past the retention cutoff, OR
+    - Both deploy statuses are NONE (feature-branch merge, no deploy tracking needed).
     """
     now = datetime.now(tz=timezone.utc)
     cutoff = now - timedelta(days=retention_days)
     result: list[PullRequest] = []
     for pr in merged_prs:
+        # Feature-branch merges don't need deploy tracking — drop immediately
+        if pr.acc_deploy == DeployStatus.NONE and pr.prd_deploy == PrdDeployStatus.NONE:
+            continue
         if (
             pr.acc_deploy == DeployStatus.ACC_DEPLOYED
             and pr.prd_deploy == PrdDeployStatus.PRD_DEPLOYED
