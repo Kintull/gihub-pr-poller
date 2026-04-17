@@ -14,6 +14,7 @@ from github_tracker.pr_service import (
     compute_thread_counts,
     compute_user_approved,
     filter_expired_merged_prs,
+    find_tree_members,
     group_prs,
     order_with_nesting,
 )
@@ -225,6 +226,72 @@ class TestGroupPrs:
         ]
         _, other = group_prs(prs)
         assert [p.number for p in other] == [20, 40, 10, 30]
+
+
+class TestFindTreeMembers:
+    def test_single_pr_no_tree(self):
+        """PR with no tree relationships returns just itself."""
+        pr = make_pr(number=1, branch_name="feat", base_branch="main")
+        result = find_tree_members(pr, [pr])
+        assert [p.number for p in result] == [1]
+
+    def test_root_returns_entire_tree(self):
+        """Selecting root returns root + all children."""
+        root = make_pr(number=1, branch_name="feat", base_branch="main")
+        child1 = make_pr(number=2, branch_name="feat-a", base_branch="feat")
+        child2 = make_pr(number=3, branch_name="feat-b", base_branch="feat")
+        all_prs = [root, child1, child2]
+        result = find_tree_members(root, all_prs)
+        assert sorted(p.number for p in result) == [1, 2, 3]
+
+    def test_child_returns_entire_tree(self):
+        """Selecting a child returns the same full tree."""
+        root = make_pr(number=1, branch_name="feat", base_branch="main")
+        child = make_pr(number=2, branch_name="feat-a", base_branch="feat")
+        all_prs = [root, child]
+        result = find_tree_members(child, all_prs)
+        assert sorted(p.number for p in result) == [1, 2]
+
+    def test_deep_chain(self):
+        """C -> B -> A -> main: selecting any returns all three."""
+        a = make_pr(number=1, branch_name="feat-a", base_branch="main")
+        b = make_pr(number=2, branch_name="feat-b", base_branch="feat-a")
+        c = make_pr(number=3, branch_name="feat-c", base_branch="feat-b")
+        all_prs = [a, b, c]
+        for target in [a, b, c]:
+            result = find_tree_members(target, all_prs)
+            assert sorted(p.number for p in result) == [1, 2, 3]
+
+    def test_cross_repo_separate_trees(self):
+        """Same branch names in different repos are separate trees."""
+        r1_root = make_pr(number=1, branch_name="feat", base_branch="main", repo="org/repo1")
+        r1_child = make_pr(number=2, branch_name="feat-a", base_branch="feat", repo="org/repo1")
+        r2_root = make_pr(number=3, branch_name="feat", base_branch="main", repo="org/repo2")
+        all_prs = [r1_root, r1_child, r2_root]
+        result = find_tree_members(r1_child, all_prs)
+        assert sorted(p.number for p in result) == [1, 2]
+
+    def test_deploy_branch_not_parent(self):
+        """PRs targeting deploy branches don't form parent-child."""
+        pr1 = make_pr(number=1, branch_name="feat-a", base_branch="main")
+        pr2 = make_pr(number=2, branch_name="feat-b", base_branch="main")
+        result = find_tree_members(pr1, [pr1, pr2])
+        assert [p.number for p in result] == [1]
+
+    def test_orphan_child_returns_just_itself(self):
+        """Sub-PR whose parent is not in the list returns just itself."""
+        orphan = make_pr(number=2, branch_name="feat-a", base_branch="feat-missing")
+        result = find_tree_members(orphan, [orphan])
+        assert [p.number for p in result] == [2]
+
+    def test_mixed_favourite_states(self):
+        """Tree members with different FAVOURITE states are all returned."""
+        root = make_pr(number=1, branch_name="feat", base_branch="main",
+                       labels=frozenset({PRLabel.FAVOURITE}))
+        child = make_pr(number=2, branch_name="feat-a", base_branch="feat",
+                        labels=frozenset())
+        result = find_tree_members(root, [root, child])
+        assert sorted(p.number for p in result) == [1, 2]
 
 
 class TestComputeCiProgress:

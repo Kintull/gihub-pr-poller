@@ -1371,6 +1371,109 @@ class TestAutoFavourite:
                     assert other_table.row_count == 1
 
 
+class TestTreeFavourite:
+    """Tests for tree-wide favouriting."""
+
+    @pytest.mark.asyncio
+    async def test_favourite_parent_favourites_entire_tree(self):
+        """Pressing f on a parent PR favourites both parent and child."""
+        raw = [
+            make_github_pr_response(number=1, head={"sha": "a1", "ref": "feat"}, base={"ref": "main"}),
+            make_github_pr_response(number=2, head={"sha": "a2", "ref": "feat-a"}, base={"ref": "feat"}),
+        ]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            assert other_table.row_count == 2
+            assert my_table.row_count == 0
+            other_table.focus()
+            # Select parent PR (first row)
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 2
+            assert other_table.row_count == 0
+            for pr in my_table.pull_requests:
+                assert PRLabel.FAVOURITE in pr.labels
+
+    @pytest.mark.asyncio
+    async def test_favourite_child_favourites_entire_tree(self):
+        """Pressing f on a child PR favourites the entire tree including root."""
+        raw = [
+            make_github_pr_response(number=1, head={"sha": "a1", "ref": "feat"}, base={"ref": "main"}),
+            make_github_pr_response(number=2, head={"sha": "a2", "ref": "feat-a"}, base={"ref": "feat"}),
+        ]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            other_table.focus()
+            # Move to second row (child PR)
+            await pilot.press("j")
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 2
+            assert other_table.row_count == 0
+
+    @pytest.mark.asyncio
+    async def test_unfavourite_tree_removes_all(self):
+        """Pressing f to unfavourite removes FAVOURITE from all tree members."""
+        raw = [
+            make_github_pr_response(number=1, head={"sha": "a1", "ref": "feat"}, base={"ref": "main"}),
+            make_github_pr_response(number=2, head={"sha": "a2", "ref": "feat-a"}, base={"ref": "feat"}),
+        ]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            # Favourite the tree
+            other_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 2
+            # Now unfavourite
+            my_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 0
+            assert other_table.row_count == 2
+            for pr in other_table.pull_requests:
+                assert PRLabel.FAVOURITE not in pr.labels
+
+    @pytest.mark.asyncio
+    async def test_favourite_single_pr_no_tree_unchanged(self):
+        """PR not in a tree still toggles only itself."""
+        raw = [
+            make_github_pr_response(number=1, head={"sha": "a1", "ref": "feat-a"}, base={"ref": "main"}),
+            make_github_pr_response(number=2, head={"sha": "a2", "ref": "feat-b"}, base={"ref": "main"}),
+        ]
+        client = make_mock_client(raw_prs=raw)
+        app = GitHubTrackerApp(config=make_config(), github_client=client)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.app.workers.wait_for_complete()
+            await pilot.pause()
+            other_table = app.query_one("#other-pr-table", PRTable)
+            my_table = app.query_one("#my-pr-table", PRTable)
+            other_table.focus()
+            await pilot.press("f")
+            await pilot.pause()
+            assert my_table.row_count == 1
+            assert other_table.row_count == 1
+
+
 class TestFormatStaleness:
     def test_none_returns_empty(self):
         assert GitHubTrackerApp._format_staleness(None) == ""

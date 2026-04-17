@@ -89,16 +89,15 @@ def group_prs(
     return my_prs, other_prs
 
 
-def order_with_nesting(
+def _build_tree_index(
     prs: list[PullRequest],
-) -> tuple[list[PullRequest], dict[int, PRDisplayItem]]:
-    """Reorder PRs so sub-PRs follow their parent feature branch PR.
+) -> tuple[dict[int, PullRequest], dict[int, list[PullRequest]], set[int]]:
+    """Build parent-child tree index from a list of PRs.
 
-    A sub-PR is one whose base_branch matches another open PR's branch_name
-    within the same repo, and whose base_branch is not a deploy branch.
-
-    Returns (ordered_prs, display_items) where display_items maps PR number
-    to its display metadata.
+    Returns (parent_of, children_of, child_numbers) where:
+    - parent_of maps PR number -> its direct parent PR
+    - children_of maps root PR number -> list of all transitive children
+    - child_numbers is the set of PR numbers that are children
     """
     # Map (repo, branch_name) -> PR for finding parents
     branch_to_pr: dict[tuple[str, str], PullRequest] = {}
@@ -132,6 +131,50 @@ def order_with_nesting(
             if root.number != pr.number:
                 children_of.setdefault(root.number, []).append(pr)
                 child_numbers.add(pr.number)
+
+    return parent_of, children_of, child_numbers
+
+
+def find_tree_members(
+    target: PullRequest,
+    all_prs: list[PullRequest],
+) -> list[PullRequest]:
+    """Find all PRs in the same tree as target.
+
+    A tree = root PR (targeting a deploy branch) + all transitive children.
+    Returns list including target. If target has no tree relations, returns [target].
+    """
+    parent_of, children_of, child_numbers = _build_tree_index(all_prs)
+
+    # Find root of target's tree
+    visited: set[int] = set()
+    current = target
+    while current.number in parent_of and current.number not in visited:
+        visited.add(current.number)
+        current = parent_of[current.number]
+    root = current
+
+    # Collect root + all children
+    children = children_of.get(root.number, [])
+    if not children and root.number not in child_numbers:
+        # target is standalone (or root with no children)
+        if root.number == target.number:
+            return [target]
+    return [root] + children
+
+
+def order_with_nesting(
+    prs: list[PullRequest],
+) -> tuple[list[PullRequest], dict[int, PRDisplayItem]]:
+    """Reorder PRs so sub-PRs follow their parent feature branch PR.
+
+    A sub-PR is one whose base_branch matches another open PR's branch_name
+    within the same repo, and whose base_branch is not a deploy branch.
+
+    Returns (ordered_prs, display_items) where display_items maps PR number
+    to its display metadata.
+    """
+    _parent_of, children_of, child_numbers = _build_tree_index(prs)
 
     # Build ordered output
     ordered: list[PullRequest] = []

@@ -22,7 +22,7 @@ from github_tracker.deploy_tracker import (
 )
 from github_tracker.github_client import GitHubClient
 from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
-from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, group_prs, order_with_nesting
+from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, find_tree_members, group_prs, order_with_nesting
 from github_tracker.refresh import (
     backfill_pr_details,
     fetch_pr_lists,
@@ -630,7 +630,7 @@ class GitHubTrackerApp(App):
             table.action_cursor_down()
 
     def action_favourite(self) -> None:
-        """Toggle favourite status on the selected PR."""
+        """Toggle favourite status on the selected PR and its entire tree."""
         table = self._get_focused_table()
         if table is None:
             return
@@ -638,22 +638,34 @@ class GitHubTrackerApp(App):
         if pr is None:
             self.notify("No PR selected", severity="warning")
             return
-        removing_favourite = PRLabel.FAVOURITE in pr.labels
-        if removing_favourite:
-            new_labels = pr.labels - {PRLabel.FAVOURITE}
-            self.notify(f"Unfavourited #{pr.number}")
-        else:
-            new_labels = pr.labels | {PRLabel.FAVOURITE}
-            self.notify(f"Favourited #{pr.number}")
-        updated_pr = replace(pr, labels=new_labels)
-        self._update_pr_in_tables(updated_pr)
-        # Also update _merged_prs so merged PRs (e.g. deployed to ACC) move correctly
-        self._merged_prs = [
-            updated_pr if p.number == pr.number and p.repo == pr.repo else p
-            for p in self._merged_prs
-        ]
         my_table = self.query_one("#my-pr-table", PRTable)
         other_table = self.query_one("#other-pr-table", PRTable)
+        all_prs = list(my_table.pull_requests) + list(other_table.pull_requests)
+
+        tree_members = find_tree_members(pr, all_prs)
+        removing_favourite = PRLabel.FAVOURITE in pr.labels
+
+        for member in tree_members:
+            if removing_favourite:
+                new_labels = member.labels - {PRLabel.FAVOURITE}
+            else:
+                new_labels = member.labels | {PRLabel.FAVOURITE}
+            updated = replace(member, labels=new_labels)
+            self._update_pr_in_tables(updated)
+            self._merged_prs = [
+                updated if m.number == member.number and m.repo == member.repo else m
+                for m in self._merged_prs
+            ]
+
+        if len(tree_members) > 1:
+            numbers = ", ".join(f"#{m.number}" for m in tree_members)
+            verb = "Unfavourited" if removing_favourite else "Favourited"
+            self.notify(f"{verb} tree: {numbers}")
+        elif removing_favourite:
+            self.notify(f"Unfavourited #{pr.number}")
+        else:
+            self.notify(f"Favourited #{pr.number}")
+
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
         final_open = [
             p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
