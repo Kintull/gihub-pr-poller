@@ -15,15 +15,13 @@ from github_tracker.theme import Color
 
 COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "PRD", "Jira")
 
-# Fixed widths for non-Title columns (content chars, padding added by DataTable).
+# Fixed widths for columns that should not auto-size.
+# Columns not listed here remain auto-width (CI, ACC, PRD size to content).
 _FIXED_WIDTHS: dict[str, int] = {
     "#": 6,
     "Author": 12,
     "\U0001f4ac": 2,
     "✓": 2,
-    "CI": 9,       # ⠋(12/15)
-    "ACC": 11,     # ⠋CI(12/15)
-    "PRD": 6,      # ⠋ARGO
     "Jira": 10,
 }
 _MIN_TITLE_WIDTH = 15
@@ -58,15 +56,16 @@ class PRTable(DataTable):
     def _resize_title_column(self) -> None:
         """Set Title column width to fill remaining space."""
         title_key = None
+        other_width = 0
         for key, col in self.columns.items():
             if col.label.plain == "Title":
                 title_key = key
-                break
+            else:
+                other_width += col.get_render_width(self)
         if title_key is None:
             return
         padding = 2 * self.cell_padding
-        fixed_total = sum((w + padding) for w in _FIXED_WIDTHS.values())
-        available = self.size.width - fixed_total - padding  # subtract Title padding too
+        available = self.size.width - other_width - padding
         title_width = max(_MIN_TITLE_WIDTH, available)
         self.columns[title_key].width = title_width
         self.columns[title_key].auto_width = False
