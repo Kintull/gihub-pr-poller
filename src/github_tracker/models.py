@@ -93,7 +93,10 @@ ACC_DEPLOY_SYMBOLS: dict[DeployStatus, str | Text] = {
 def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: int = 0, total: int = 0) -> str | Text:
     """Return display string for a deploy status."""
     if status == DeployStatus.ACC_DEPLOYING:
-        return SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
+        frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
+        if total > 0:
+            return f"{frame}CI({completed}/{total})"
+        return frame
     if status == DeployStatus.ACC_ARGO:
         return f"{SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]}ARGO"
     return ACC_DEPLOY_SYMBOLS[status]

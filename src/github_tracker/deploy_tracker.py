@@ -8,7 +8,7 @@ from datetime import datetime
 
 from github_tracker.github_client import GitHubClient
 from github_tracker.models import CIStatus, DeployStatus, PrdDeployStatus, PullRequest
-from github_tracker.pr_service import compute_deploy_status
+from github_tracker.pr_service import compute_ci_progress, compute_deploy_status
 
 logger = logging.getLogger("github_tracker.deploy_tracker")
 
@@ -144,4 +144,15 @@ async def update_deploy_statuses(
             mpr, compare_status, deploy_created_at, argo_cooldown_minutes
         )
         result[i] = replace(mpr, acc_deploy=new_status)
+
+    # Fetch CI progress for PRs still deploying
+    for i, mpr in enumerate(result):
+        if mpr.acc_deploy in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO) and mpr.merge_commit_sha:
+            try:
+                check_runs = await github_client.fetch_check_runs(mpr.repo, mpr.merge_commit_sha)
+                completed, total = compute_ci_progress(check_runs)
+                result[i] = replace(result[i], acc_completed_steps=completed, acc_total_steps=total)
+            except Exception as e:
+                logger.error("Error fetching CI for merged PR #%d: %s", mpr.number, e)
+
     return result
