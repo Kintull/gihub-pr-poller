@@ -5,7 +5,7 @@ description: Publish a new Homebrew version of github-tracker. Use whenever the 
 
 # Publish a new Homebrew release of github-tracker
 
-This skill handles the full release pipeline: determine version bump, update pyproject.toml, tag, create GitHub release, compute tarball SHA, and push an updated Homebrew formula to the tap.
+This skill handles the full release pipeline: determine version bump, update pyproject.toml, tag, create GitHub release, build a standalone binary with PyInstaller, and push an updated Homebrew formula to the tap.
 
 ## Repository context
 
@@ -15,12 +15,13 @@ This skill handles the full release pipeline: determine version bump, update pyp
 | Homebrew tap | `Kintull/homebrew-tap` |
 | Formula path | `Formula/github-tracker.rb` |
 | Version source | `pyproject.toml` → `version = "X.Y.Z"` |
+| Distribution | Pre-built binary (PyInstaller `--onefile`) |
 
 ## Step 0 — Determine version bump type
 
-The version scheme is `0.MINOR.PATCH`. Check what changed since the last tag to decide which component to bump.
+The version scheme is `MAJOR.MINOR.PATCH`. Check what changed since the last tag to decide which component to bump.
 
-### Minor bump (0.X.0) — triggers
+### Minor bump (X.Y.0) — triggers
 
 These represent changes that affect persisted data or user-facing contracts:
 
@@ -28,7 +29,7 @@ These represent changes that affect persisted data or user-facing contracts:
 - **Breaking config changes**: fields removed or renamed in `src/github_tracker/config.py`
 - **API contract changes**: serialisation format, CLI flags, or external integration interfaces changed in a backwards-incompatible way
 
-### Patch bump (0.0.X) — everything else
+### Patch bump (X.Y.Z) — everything else
 
 - New features, new API methods, non-breaking additions
 - Bug fixes
@@ -78,39 +79,62 @@ gh release create vX.Y.Z --title "vX.Y.Z" --notes "CHANGELOG_HERE"
 
 Write a concise changelog in the release notes body. Group changes by type (features, fixes, breaking changes). Use a `## What's Changed` header. If there are breaking config changes, include a migration snippet showing old vs new YAML.
 
-## Step 4 — Get tarball SHA256
+## Step 4 — Build standalone binary
+
+The formula ships a pre-built macOS ARM64 binary. No Python or pip needed at install time.
+
+### 4a — Ensure package metadata is up to date
 
 ```bash
-curl -sL "https://github.com/Kintull/gihub-pr-poller/archive/refs/tags/vX.Y.Z.tar.gz" | shasum -a 256
+.venv/bin/pip install -e .
+```
+
+This is needed because PyInstaller bundles `importlib.metadata` info used by `--version`.
+
+### 4b — Build with PyInstaller
+
+```bash
+.venv/bin/pyinstaller \
+  --onefile \
+  --name github-tracker \
+  --copy-metadata github-tracker \
+  --collect-all textual \
+  --hidden-import github_tracker \
+  src/github_tracker/__main__.py
+```
+
+### 4c — Verify the binary
+
+```bash
+./dist/github-tracker --version
+# Should print: github-tracker X.Y.Z
+```
+
+### 4d — Package and upload
+
+```bash
+cd dist && tar czf github-tracker-macos-arm64.tar.gz github-tracker && cd ..
+```
+
+Upload to the release:
+
+```bash
+gh release upload vX.Y.Z /absolute/path/to/dist/github-tracker-macos-arm64.tar.gz --clobber
+```
+
+**Note:** `gh release upload` may fail with relative paths that contain globs. Always use absolute paths.
+
+### 4e — Get the binary tarball SHA256
+
+```bash
+shasum -a 256 dist/github-tracker-macos-arm64.tar.gz
 ```
 
 Save the hash — you need it for the formula.
 
-## Step 5 — Check for dependency changes
+## Step 5 — Update the Homebrew formula
 
-Compare the current virtualenv against the existing formula to see if any Python dependency versions changed:
-
-```bash
-# Current versions
-.venv/bin/pip freeze | grep -iE 'textual|httpx|pyyaml|rich|httpcore|h11|anyio|certifi|idna|markdown|mdit|mdurl|platformdirs|pygments|linkify|uc-micro|typing.ext' | sort
-
-# Existing formula versions
-gh api repos/Kintull/homebrew-tap/contents/Formula/github-tracker.rb --jq '.content' | base64 -d
-```
-
-If versions match, only the `url` and `sha256` lines need updating. If any dependency version changed, regenerate the corresponding `resource` blocks with new URLs and SHA256 hashes. PyPI source tarball URLs follow this pattern:
-
-```
-https://files.pythonhosted.org/packages/source/{first_letter}/{name}/{name}-{version}.tar.gz
-```
-
-To get the SHA256 for a PyPI package:
-
-```bash
-curl -sL "https://files.pythonhosted.org/packages/source/t/textual/textual-X.Y.Z.tar.gz" | shasum -a 256
-```
-
-## Step 6 — Update the Homebrew formula
+The formula is a simple binary install — no virtualenv, no pip resources.
 
 1. Get the current file SHA (needed for the GitHub API update):
 
@@ -118,12 +142,25 @@ curl -sL "https://files.pythonhosted.org/packages/source/t/textual/textual-X.Y.Z
 gh api repos/Kintull/homebrew-tap/contents/Formula/github-tracker.rb --jq '.sha'
 ```
 
-2. Read the current formula, update the `url` and `sha256` lines (and any changed resource blocks), and write to a temp file:
+2. Write the updated formula to a temp file. The formula template is:
 
-```bash
-# The url line should become:
-url "https://github.com/Kintull/gihub-pr-poller/archive/refs/tags/vX.Y.Z.tar.gz"
-sha256 "NEW_SHA256_HERE"
+```ruby
+class GithubTracker < Formula
+  desc "A TUI application for tracking GitHub PRs"
+  homepage "https://github.com/Kintull/gihub-pr-poller"
+  url "https://github.com/Kintull/gihub-pr-poller/releases/download/vX.Y.Z/github-tracker-macos-arm64.tar.gz"
+  sha256 "NEW_SHA256_HERE"
+  version "X.Y.Z"
+  license "MIT"
+
+  def install
+    bin.install "github-tracker"
+  end
+
+  test do
+    assert_match "github-tracker #{version}", shell_output("#{bin}/github-tracker --version")
+  end
+end
 ```
 
 3. Push the updated formula via the GitHub API:
@@ -136,7 +173,7 @@ gh api repos/Kintull/homebrew-tap/contents/Formula/github-tracker.rb \
   -f sha="CURRENT_FILE_SHA"
 ```
 
-## Step 7 — Confirm
+## Step 6 — Confirm
 
 Print a summary:
 

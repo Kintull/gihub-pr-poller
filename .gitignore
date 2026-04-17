@@ -25,6 +25,7 @@ __pycache__/
 .eggs/
 dist/
 build/
+*.spec
 
 # Virtual environments
 .venv/
