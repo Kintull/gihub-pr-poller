@@ -15,6 +15,19 @@ from github_tracker.theme import Color
 
 COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "PRD", "Jira")
 
+# Fixed widths for non-Title columns (content chars, padding added by DataTable).
+_FIXED_WIDTHS: dict[str, int] = {
+    "#": 6,
+    "Author": 12,
+    "\U0001f4ac": 2,
+    "✓": 2,
+    "CI": 9,       # ⠋(12/15)
+    "ACC": 11,     # ⠋CI(12/15)
+    "PRD": 6,      # ⠋ARGO
+    "Jira": 10,
+}
+_MIN_TITLE_WIDTH = 15
+
 
 class PRTable(DataTable):
     """DataTable displaying pull requests."""
@@ -34,8 +47,31 @@ class PRTable(DataTable):
 
     def on_mount(self) -> None:
         for col in COLUMNS:
-            self.add_column(col, key=col)
+            width = _FIXED_WIDTHS.get(col)
+            self.add_column(col, key=col, width=width)
         self.cursor_type = "row"
+        self._resize_title_column()
+
+    def on_resize(self) -> None:
+        self._resize_title_column()
+
+    def _resize_title_column(self) -> None:
+        """Set Title column width to fill remaining space."""
+        title_key = None
+        for key, col in self.columns.items():
+            if col.label.plain == "Title":
+                title_key = key
+                break
+        if title_key is None:
+            return
+        padding = 2 * self.cell_padding
+        fixed_total = sum((w + padding) for w in _FIXED_WIDTHS.values())
+        available = self.size.width - fixed_total - padding  # subtract Title padding too
+        title_width = max(_MIN_TITLE_WIDTH, available)
+        self.columns[title_key].width = title_width
+        self.columns[title_key].auto_width = False
+        self._require_update_dimensions = True
+        self.check_idle()
 
     def get_component_rich_style(self, name: str, *, partial: bool = False) -> Style:
         style = super().get_component_rich_style(name, partial=partial)
