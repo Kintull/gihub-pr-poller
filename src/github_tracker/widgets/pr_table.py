@@ -53,6 +53,11 @@ class PRTable(DataTable):
     def on_resize(self) -> None:
         self._resize_title_column()
 
+    def _update_column_widths(self, updated_cells) -> None:
+        """After DataTable recalculates content_width, re-fit Title."""
+        super()._update_column_widths(updated_cells)
+        self._resize_title_column()
+
     def _resize_title_column(self) -> None:
         """Set Title column width to fill remaining space."""
         title_key = None
@@ -66,11 +71,11 @@ class PRTable(DataTable):
             return
         padding = 2 * self.cell_padding
         available = self.size.width - other_width - padding
-        title_width = max(_MIN_TITLE_WIDTH, available)
-        self.columns[title_key].width = title_width
-        self.columns[title_key].auto_width = False
-        self._require_update_dimensions = True
-        self.check_idle()
+        new_width = max(_MIN_TITLE_WIDTH, available)
+        if self.columns[title_key].width != new_width:
+            self.columns[title_key].width = new_width
+            self.columns[title_key].auto_width = False
+            self._require_update_dimensions = True
 
     def get_component_rich_style(self, name: str, *, partial: bool = False) -> Style:
         style = super().get_component_rich_style(name, partial=partial)
