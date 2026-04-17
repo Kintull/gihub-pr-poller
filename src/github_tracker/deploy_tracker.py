@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from github_tracker.github_client import GitHubClient
-from github_tracker.models import DeployStatus, PrdDeployStatus, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PrdDeployStatus, PullRequest
 from github_tracker.pr_service import compute_deploy_status
 
 logger = logging.getLogger("github_tracker.deploy_tracker")
@@ -43,6 +43,9 @@ async def detect_newly_merged_prs(
                         prev_pr,
                         merged_at=merged_at,
                         merge_commit_sha=merge_commit_sha,
+                        ci_status=CIStatus.SUCCESS,
+                        ci_completed_steps=0,
+                        ci_total_steps=0,
                         acc_deploy=DeployStatus.ACC_DEPLOYING if is_deploy_branch else DeployStatus.NONE,
                     )
                     if (merged_pr.number, merged_pr.repo) not in existing_keys:

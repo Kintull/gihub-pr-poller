@@ -214,7 +214,7 @@ def _dict_to_merged_pr(d: object) -> PullRequest | None:
         base_branch=pr.base_branch,
         comment_count=0,
         approval_count=0,
-        ci_status=pr.ci_status,
+        ci_status=CIStatus.SUCCESS,
         jira_ticket=pr.jira_ticket,
         jira_url=pr.jira_url,
         repo=pr.repo,

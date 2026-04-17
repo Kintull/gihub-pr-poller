@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
-from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
+from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
 from github_tracker.pr_service import (
     compute_ci_progress,
     compute_phase1_labels,
@@ -81,7 +81,13 @@ async def backfill_pr_details(
     Returns updated all_prs list (same order as input).
     """
     result = list(all_prs)
-    for i, (repo, raw_pr) in enumerate(raw_data):
+    # Process FAVOURITE PRs first so "My PRs" table updates before "Other PRs"
+    indices = sorted(
+        range(len(raw_data)),
+        key=lambda i: 0 if PRLabel.FAVOURITE in all_prs[i].labels else 1,
+    )
+    for i in indices:
+        repo, raw_pr = raw_data[i]
         pr_number = raw_pr["number"]
         head_sha = raw_pr["head"]["sha"]
 
@@ -154,6 +160,9 @@ async def refresh_open_pr_details(
                     pr,
                     merged_at=merged_at,
                     merge_commit_sha=pr_detail.get("merge_commit_sha"),
+                    ci_status=CIStatus.SUCCESS,
+                    ci_completed_steps=0,
+                    ci_total_steps=0,
                     acc_deploy=DeployStatus.ACC_DEPLOYING,
                     prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
                 ))
