@@ -95,7 +95,8 @@ def acc_deploy_display(status: DeployStatus, spinner_index: int = 0, completed: 
     if status == DeployStatus.ACC_DEPLOYING:
         frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
         if total > 0:
-            return f"{frame}CI({completed}/{total})"
+            pct = completed * 100 // total
+            return f"{frame}{pct}%"
         return frame
     if status == DeployStatus.ACC_ARGO:
         return f"{SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]}ARGO"
