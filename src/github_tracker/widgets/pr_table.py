@@ -122,7 +122,7 @@ class PRTable(DataTable):
         is_author = PRLabel.AUTHOR in pr.labels
         is_non_author_draft = PRLabel.DRAFT in pr.labels and not is_author
         author_text: str | Text = Text(pr.author, style=Color.BLUE) if is_author else pr.author
-        title: str | Text = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        title: str | Text = pr.title
         display = self._display_items.get(pr.number)
         if display and display.is_sub_pr:
             prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "
@@ -215,7 +215,7 @@ class PRTable(DataTable):
         pr = self._pull_requests[idx]
         if PRLabel.DRAFT in pr.labels and PRLabel.AUTHOR not in pr.labels:
             return
-        base_title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        base_title = pr.title
         display = self._display_items.get(pr_number)
         if display and display.is_sub_pr:
             prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "

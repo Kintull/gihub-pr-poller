@@ -489,13 +489,13 @@ class TestPRTable:
             assert isinstance(style, Style)
 
     @pytest.mark.asyncio
-    async def test_row_values_favourite_shows_star_prefix(self):
-        """Favourite PRs display ★ prefix in the title column."""
+    async def test_row_values_favourite_no_prefix(self):
+        """Favourite PRs render their title without any prefix."""
         async with PRTableTestApp().run_test() as pilot:
             table = pilot.app.query_one("#pr-table", PRTable)
             pr = make_pr(number=1, title="My PR", labels=frozenset({PRLabel.FAVOURITE}))
             values = table._row_values(pr)
-            assert values[1] == "\u2605 My PR"
+            assert values[1] == "My PR"
 
     @pytest.mark.asyncio
     async def test_row_values_non_favourite_plain_title(self):
