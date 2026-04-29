@@ -553,6 +553,136 @@ class TestCompareCommits:
         assert result is None
 
 
+class TestFetchRecentMergedPrsByAuthor:
+    @pytest.fixture
+    def client(self):
+        return GitHubClient(token="test-token")
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_filters_by_author_and_merge_window(self, client):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        since = now - timedelta(days=5)
+        prs = [
+            # match: alice authored, merged 1 day ago
+            {
+                "number": 1,
+                "title": "ok",
+                "html_url": "https://github.com/o/r/pull/1",
+                "head": {"sha": "s1", "ref": "b1"},
+                "base": {"ref": "main"},
+                "user": {"login": "alice"},
+                "merged_at": (now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "updated_at": (now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "merge_commit_sha": "sha1",
+                "comments": 0,
+                "review_comments": 0,
+                "requested_reviewers": [],
+                "body": "",
+            },
+            # excluded: bob authored
+            {
+                "number": 2,
+                "title": "no",
+                "html_url": "https://github.com/o/r/pull/2",
+                "head": {"sha": "s2", "ref": "b2"},
+                "base": {"ref": "main"},
+                "user": {"login": "bob"},
+                "merged_at": (now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "updated_at": (now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "merge_commit_sha": "sha2",
+                "comments": 0,
+                "review_comments": 0,
+                "requested_reviewers": [],
+                "body": "",
+            },
+            # excluded: closed but never merged (merged_at null)
+            {
+                "number": 3,
+                "title": "closed",
+                "html_url": "https://github.com/o/r/pull/3",
+                "head": {"sha": "s3", "ref": "b3"},
+                "base": {"ref": "main"},
+                "user": {"login": "alice"},
+                "merged_at": None,
+                "updated_at": (now - timedelta(days=2)).isoformat().replace("+00:00", "Z"),
+                "comments": 0,
+                "review_comments": 0,
+                "requested_reviewers": [],
+                "body": "",
+            },
+            # excluded: alice authored but updated long ago — early-exits the loop
+            {
+                "number": 4,
+                "title": "old",
+                "html_url": "https://github.com/o/r/pull/4",
+                "head": {"sha": "s4", "ref": "b4"},
+                "base": {"ref": "main"},
+                "user": {"login": "alice"},
+                "merged_at": (now - timedelta(days=10)).isoformat().replace("+00:00", "Z"),
+                "updated_at": (now - timedelta(days=10)).isoformat().replace("+00:00", "Z"),
+                "merge_commit_sha": "sha4",
+                "comments": 0,
+                "review_comments": 0,
+                "requested_reviewers": [],
+                "body": "",
+            },
+        ]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+        ).mock(return_value=httpx.Response(200, json=prs))
+
+        result = await client.fetch_recent_merged_prs_by_author("owner/repo", "alice", since)
+        assert [p["number"] for p in result] == [1]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_case_insensitive_author(self, client):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        since = now - timedelta(days=5)
+        prs = [{
+            "number": 1,
+            "title": "t",
+            "html_url": "https://github.com/o/r/pull/1",
+            "head": {"sha": "s1", "ref": "b1"},
+            "base": {"ref": "main"},
+            "user": {"login": "Alice"},
+            "merged_at": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "updated_at": (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "merge_commit_sha": "sha1",
+            "comments": 0, "review_comments": 0, "requested_reviewers": [], "body": "",
+        }]
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+        ).mock(return_value=httpx.Response(200, json=prs))
+        result = await client.fetch_recent_merged_prs_by_author("owner/repo", "alice", since)
+        assert len(result) == 1
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_empty_author_returns_empty(self, client):
+        from datetime import datetime, timezone
+        result = await client.fetch_recent_merged_prs_by_author(
+            "owner/repo", "", datetime.now(tz=timezone.utc)
+        )
+        assert result == []
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_api_error_returns_empty(self, client):
+        from datetime import datetime, timedelta, timezone
+        since = datetime.now(tz=timezone.utc) - timedelta(days=5)
+        respx.get(
+            f"{GITHUB_API}/repos/owner/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+        ).mock(return_value=httpx.Response(500, json={"message": "server error"}))
+        result = await client.fetch_recent_merged_prs_by_author("owner/repo", "alice", since)
+        assert result == []
+
+
 class TestParsePrBasic:
     @pytest.fixture
     def client(self):

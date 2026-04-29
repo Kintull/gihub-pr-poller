@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from github_tracker.github_client import GitHubClient, _aggregate_ci_status, count_approvals
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest
@@ -136,6 +136,56 @@ async def backfill_pr_details(
         result[i] = updated_pr
 
     return result
+
+
+async def fetch_user_merged_prs(
+    repos: list[str],
+    github_client: GitHubClient,
+    jira_base_url: str,
+    github_username: str,
+    days: int,
+) -> list[PullRequest]:
+    """Fetch PRs authored by the user that merged within the last `days` days.
+
+    Returns PullRequests labelled AUTHOR with merged_at + merge_commit_sha set.
+    Deploy statuses are seeded as ACC_DEPLOYING / PRD_DEPLOYING so the standard
+    deploy-tracking pipeline (filter_feature_branch_merges, update_deploy_statuses,
+    PRD compare) can resolve them to actual states. Sorted by merged_at desc.
+    """
+    if not github_username or days <= 0:
+        return []
+
+    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    collected: list[PullRequest] = []
+
+    for repo in repos:
+        try:
+            raw_prs = await github_client.fetch_recent_merged_prs_by_author(
+                repo, github_username, since
+            )
+        except Exception as e:
+            logger.error("Error fetching user merged PRs for %s: %s", repo, e)
+            continue
+
+        for raw in raw_prs:
+            pr = github_client.parse_pr_basic(raw, repo, jira_base_url)
+            merged_str = raw.get("merged_at") or ""
+            try:
+                merged_at = datetime.fromisoformat(merged_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            collected.append(replace(
+                pr,
+                merged_at=merged_at,
+                merge_commit_sha=raw.get("merge_commit_sha"),
+                ci_status=CIStatus.SUCCESS,
+                labels=frozenset({PRLabel.AUTHOR}),
+                acc_deploy=DeployStatus.ACC_DEPLOYING,
+                prd_deploy=PrdDeployStatus.PRD_DEPLOYING,
+            ))
+
+    collected.sort(key=lambda p: p.merged_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return collected
 
 
 async def refresh_open_pr_details(

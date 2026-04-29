@@ -105,6 +105,55 @@ class GitHubClient:
         logger.info("Found %d open PRs for %s", len(data), repo)
         return data
 
+    async def fetch_recent_merged_prs_by_author(
+        self, repo: str, author: str, since: datetime
+    ) -> list[dict]:
+        """Fetch closed PRs in repo, return ones authored by `author` and merged at/after `since`.
+
+        Walks one page (sorted by updated_at desc) and stops once entries fall
+        past `since`. Returns [] on API error so a single-repo failure does not
+        abort startup.
+        """
+        if not author:
+            return []
+        logger.info("Fetching recent merged PRs by %s for %s since %s", author, repo, since.isoformat())
+        try:
+            data = await self._get(
+                f"/repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+            )
+        except GitHubAPIError as e:
+            logger.warning("Failed to fetch closed PRs for %s: %s", repo, e)
+            return []
+        if not isinstance(data, list):
+            logger.warning("Closed PRs response not a list for %s", repo)
+            return []
+
+        author_lower = author.lower()
+        results: list[dict] = []
+        for raw in data:
+            updated_str = raw.get("updated_at") or ""
+            try:
+                updated_at = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if updated_at < since:
+                break
+            merged_str = raw.get("merged_at")
+            if not merged_str:
+                continue
+            try:
+                merged_at = datetime.fromisoformat(merged_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if merged_at < since:
+                continue
+            user = (raw.get("user") or {}).get("login", "")
+            if user.lower() != author_lower:
+                continue
+            results.append(raw)
+        logger.info("Found %d recent merged PRs by %s in %s", len(results), author, repo)
+        return results
+
     async def fetch_reviews(self, repo: str, pr_number: int) -> list[dict]:
         """Fetch reviews for a pull request."""
         logger.debug("Fetching reviews for %s#%d", repo, pr_number)

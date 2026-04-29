@@ -26,6 +26,7 @@ from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_
 from github_tracker.refresh import (
     backfill_pr_details,
     fetch_pr_lists,
+    fetch_user_merged_prs,
     refresh_open_pr_details,
 )
 from github_tracker.state import load_state, save_state
@@ -37,6 +38,7 @@ logger = logging.getLogger("github_tracker.app")
 
 MY_PRS_REFRESH_INTERVAL = 60  # seconds
 UPDATE_CHECK_REPO = "Kintull/github-pr-poller"
+USER_MERGED_LOOKBACK_DAYS = 5
 
 HELP_TEXT = """
 Keyboard Shortcuts:
@@ -130,6 +132,7 @@ class GitHubTrackerApp(App):
         self._label_update_timer = None
         self._help_visible = False
         self._merged_prs: list[PullRequest] = []
+        self._user_recent_merged: list[PullRequest] = []
         self._previous_open_prs: list[PullRequest] = []
         self._my_prs_refreshed_at: datetime | None = None
 
@@ -250,17 +253,46 @@ class GitHubTrackerApp(App):
         ]
         self._merged_prs.extend(new_merged)
 
-        # Re-check base branches and backfill merge_commit_sha
-        self._merged_prs = await filter_feature_branch_merges(self._merged_prs, self.github_client)
-        self._merged_prs = await backfill_merge_commit_shas(self._merged_prs, self.github_client)
-        self._merged_prs = await update_deploy_statuses(
-            self._merged_prs, self.github_client,
+        # Fetch user's own PRs merged in the recent window (for Other PRs).
+        # These run through the same deploy pipeline as _merged_prs so ACC/PRD
+        # statuses are visible, but they bypass the retention filter so the
+        # full N-day window stays visible regardless of acc_retention_days.
+        try:
+            user_merged = await fetch_user_merged_prs(
+                repos=self.config.github_repos,
+                github_client=self.github_client,
+                jira_base_url=self.config.jira_base_url,
+                github_username=self.config.github_username,
+                days=USER_MERGED_LOOKBACK_DAYS,
+            )
+        except Exception as e:
+            logger.error("Error fetching user-recent-merged PRs: %s", e)
+            user_merged = []
+        dedup_keys = (
+            {(p.number, p.repo) for p in all_prs}
+            | {(m.number, m.repo) for m in self._merged_prs}
+        )
+        self._user_recent_merged = [
+            pr for pr in user_merged if (pr.number, pr.repo) not in dedup_keys
+        ]
+        logger.info(
+            "Loaded %d user-recent-merged PRs (last %d days)",
+            len(self._user_recent_merged), USER_MERGED_LOOKBACK_DAYS,
+        )
+
+        # Run combined deploy pipeline (preserves order/length so we can split back).
+        user_recent_keys = {(p.number, p.repo) for p in self._user_recent_merged}
+        combined = self._merged_prs + self._user_recent_merged
+        combined = await filter_feature_branch_merges(combined, self.github_client)
+        combined = await backfill_merge_commit_shas(combined, self.github_client)
+        combined = await update_deploy_statuses(
+            combined, self.github_client,
             self.config.acc_deploy_environment, self.config.argo_cooldown_minutes,
         )
 
         # Check PRD deployment status for repos with merged PRs
         prd_prs_to_check = [
-            (i, mpr) for i, mpr in enumerate(self._merged_prs)
+            (i, mpr) for i, mpr in enumerate(combined)
             if mpr.prd_deploy in (PrdDeployStatus.PRD_DEPLOYING, PrdDeployStatus.PRD_ARGO)
             and mpr.merge_commit_sha is not None
         ]
@@ -289,9 +321,14 @@ class GitHubTrackerApp(App):
             new_status = compute_prd_deploy_status(
                 mpr, compare_status, deploy_created_at, self.config.argo_cooldown_minutes
             )
-            self._merged_prs[i] = replace(mpr, prd_deploy=new_status)
+            combined[i] = replace(mpr, prd_deploy=new_status)
 
-        # Filter expired merged PRs
+        # Split combined back into the two lists (preserve order within each).
+        self._user_recent_merged = [p for p in combined if (p.number, p.repo) in user_recent_keys]
+        self._merged_prs = [p for p in combined if (p.number, p.repo) not in user_recent_keys]
+
+        # Filter expired merged PRs (only the deploy-tracked list — user-recent
+        # entries are kept for the full lookback window).
         self._merged_prs = filter_expired_merged_prs(
             self._merged_prs, self.config.acc_retention_days
         )
@@ -299,7 +336,7 @@ class GitHubTrackerApp(App):
         # Display combined open + merged (deduplicate)
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
         deduped_open = [p for p in all_prs if (p.number, p.repo) not in merged_keys]
-        self._display_grouped_prs(deduped_open + self._merged_prs)
+        self._display_grouped_prs(deduped_open + self._merged_prs + self._user_recent_merged)
 
         header.status_text = f"{len(all_prs)} PRs — loading details..."
         logger.info("Displayed %d PRs, now loading details", len(all_prs))
@@ -323,11 +360,17 @@ class GitHubTrackerApp(App):
         other_table = self.query_one("#other-pr-table", PRTable)
         final_prs = list(my_table.pull_requests) + list(other_table.pull_requests)
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
-        final_open = [p for p in final_prs if p.merged_at is None and (p.number, p.repo) not in merged_keys]
+        user_recent_keys = {(p.number, p.repo) for p in self._user_recent_merged}
+        final_open = [
+            p for p in final_prs
+            if p.merged_at is None
+            and (p.number, p.repo) not in merged_keys
+            and (p.number, p.repo) not in user_recent_keys
+        ]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
-        self._display_grouped_prs(final_open + self._merged_prs)
+        self._display_grouped_prs(final_open + self._merged_prs + self._user_recent_merged)
 
-        total = len(final_open) + len(self._merged_prs)
+        total = len(final_open) + len(self._merged_prs) + len(self._user_recent_merged)
         header.status_text = f"{total} PRs"
         logger.info("Finished loading all PR details")
 
@@ -436,12 +479,20 @@ class GitHubTrackerApp(App):
         my_table = self.query_one("#my-pr-table", PRTable)
         other_table = self.query_one("#other-pr-table", PRTable)
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
+        user_recent_keys = {(p.number, p.repo) for p in self._user_recent_merged}
+        all_in_tables = list(my_table.pull_requests) + list(other_table.pull_requests)
         final_open = [
-            p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
-            if p.merged_at is None and (p.number, p.repo) not in merged_keys
+            p for p in all_in_tables
+            if p.merged_at is None
+            and (p.number, p.repo) not in merged_keys
+            and (p.number, p.repo) not in user_recent_keys
+        ]
+        in_tables_by_key = {(p.number, p.repo): p for p in all_in_tables}
+        self._user_recent_merged = [
+            in_tables_by_key.get((p.number, p.repo), p) for p in self._user_recent_merged
         ]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
-        self._display_grouped_prs(final_open + self._merged_prs)
+        self._display_grouped_prs(final_open + self._merged_prs + self._user_recent_merged)
         save_state(final_open, self._merged_prs)
 
     async def _refresh_focused_prs(self) -> None:
@@ -667,12 +718,21 @@ class GitHubTrackerApp(App):
             self.notify(f"Favourited #{pr.number}")
 
         merged_keys = {(m.number, m.repo) for m in self._merged_prs}
+        user_recent_keys = {(p.number, p.repo) for p in self._user_recent_merged}
         final_open = [
             p for p in list(my_table.pull_requests) + list(other_table.pull_requests)
-            if p.merged_at is None and (p.number, p.repo) not in merged_keys
+            if p.merged_at is None
+            and (p.number, p.repo) not in merged_keys
+            and (p.number, p.repo) not in user_recent_keys
+        ]
+        # Pick up label changes (e.g. user-favourited a recent merged PR) from tables
+        all_in_tables = list(my_table.pull_requests) + list(other_table.pull_requests)
+        in_tables_by_key = {(p.number, p.repo): p for p in all_in_tables}
+        self._user_recent_merged = [
+            in_tables_by_key.get((p.number, p.repo), p) for p in self._user_recent_merged
         ]
         final_open.sort(key=lambda p: p.updated_at, reverse=True)
-        self._display_grouped_prs(final_open + self._merged_prs, preserve_focus=True)
+        self._display_grouped_prs(final_open + self._merged_prs + self._user_recent_merged, preserve_focus=True)
         save_state(final_open, self._merged_prs)
         if removing_favourite:
             self.run_worker(other_table.flash_title(pr.number))
