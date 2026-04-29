@@ -53,6 +53,8 @@ async def fetch_pr_lists(
                         labels = labels | {PRLabel.FAVOURITE}
                     else:
                         new_pr_keys.add(key)
+                if raw_pr.get("draft"):
+                    labels = labels | {PRLabel.DRAFT}
                 pr = replace(pr, labels=labels)
                 all_prs.append(pr)
                 raw_data.append((repo, raw_pr))
@@ -90,6 +92,11 @@ async def backfill_pr_details(
         repo, raw_pr = raw_data[i]
         pr_number = raw_pr["number"]
         head_sha = raw_pr["head"]["sha"]
+
+        # Skip checks/CI/threads for non-author drafts — they render as em-dashes.
+        existing_labels = all_prs[i].labels
+        if PRLabel.DRAFT in existing_labels and PRLabel.AUTHOR not in existing_labels:
+            continue
 
         try:
             reviews, check_runs, pr_detail, threads = await asyncio.gather(
@@ -222,6 +229,18 @@ async def refresh_open_pr_details(
             head_sha = (pr_detail.get("head") or {}).get("sha", "")
             if not head_sha:
                 continue
+
+            phase1_labels = compute_phase1_labels(pr, pr_detail, github_username)
+            if PRLabel.FAVOURITE in pr.labels:
+                phase1_labels = phase1_labels | {PRLabel.FAVOURITE}
+            if pr_detail.get("draft"):
+                phase1_labels = phase1_labels | {PRLabel.DRAFT}
+
+            # Skip checks/CI/threads for non-author drafts.
+            if PRLabel.DRAFT in phase1_labels and PRLabel.AUTHOR not in phase1_labels:
+                update_pr(replace(pr, labels=phase1_labels))
+                continue
+
             reviews, check_runs, threads = await asyncio.gather(
                 github_client.fetch_reviews(pr.repo, pr.number),
                 github_client.fetch_check_runs(pr.repo, head_sha),
@@ -239,9 +258,6 @@ async def refresh_open_pr_details(
         total_threads, unresolved_threads, my_commented, my_unresolved = compute_thread_counts(
             threads, github_username
         )
-        phase1_labels = compute_phase1_labels(pr, pr_detail, github_username)
-        if PRLabel.FAVOURITE in pr.labels:
-            phase1_labels = phase1_labels | {PRLabel.FAVOURITE}
         new_labels = compute_phase2_labels(phase1_labels, reviews, github_username)
         updated_pr = replace(
             pr,

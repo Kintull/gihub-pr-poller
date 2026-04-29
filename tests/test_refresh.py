@@ -80,6 +80,60 @@ class TestRefreshDetectsMergedPrs:
         assert len(result) == 0
         update_pr.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_non_author_draft_skips_review_and_ci_fetch(self):
+        """Non-author drafts only fetch pr_detail; reviews/CI/threads are skipped."""
+        prs = [make_pr(number=1, author="otheruser", repo="o/r")]
+        client = _make_client(
+            fetch_pr_detail=AsyncMock(return_value={
+                "merged_at": None,
+                "draft": True,
+                "head": {"sha": "abc"},
+                "comments": 0,
+                "review_comments": 0,
+                "user": {"login": "otheruser"},
+                "requested_reviewers": [],
+                "body": "",
+            })
+        )
+        update_pr = MagicMock()
+
+        await refresh_open_pr_details(prs, client, "me", update_pr)
+
+        client.fetch_reviews.assert_not_called()
+        client.fetch_check_runs.assert_not_called()
+        client.fetch_review_threads.assert_not_called()
+        update_pr.assert_called_once()
+        updated = update_pr.call_args[0][0]
+        assert PRLabel.DRAFT in updated.labels
+        assert PRLabel.AUTHOR not in updated.labels
+
+    @pytest.mark.asyncio
+    async def test_undrafted_pr_drops_draft_label(self):
+        """Once a PR is no longer draft, DRAFT is removed and full fetch resumes."""
+        prs = [make_pr(number=1, author="otheruser", repo="o/r",
+                       labels=frozenset({PRLabel.DRAFT}))]
+        client = _make_client(
+            fetch_pr_detail=AsyncMock(return_value={
+                "merged_at": None,
+                "draft": False,
+                "head": {"sha": "abc"},
+                "comments": 0,
+                "review_comments": 0,
+                "user": {"login": "otheruser"},
+                "requested_reviewers": [],
+                "body": "",
+            })
+        )
+        update_pr = MagicMock()
+
+        await refresh_open_pr_details(prs, client, "me", update_pr)
+
+        client.fetch_reviews.assert_called_once()
+        update_pr.assert_called_once()
+        updated = update_pr.call_args[0][0]
+        assert PRLabel.DRAFT not in updated.labels
+
 
 class TestFetchUserMergedPrs:
     def _client(self, raw_by_repo: dict[str, list[dict]]) -> GitHubClient:

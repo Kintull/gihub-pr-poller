@@ -527,6 +527,57 @@ class TestPRTable:
             assert values[0] == "7"
 
     @pytest.mark.asyncio
+    async def test_row_values_non_author_draft_grays_columns(self):
+        """Non-author DRAFT PRs render #, Title, Author, Jira in DIM gray and em-dash other cells."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(
+                number=77,
+                title="Other's draft",
+                author="someone",
+                approval_count=2,
+                ci_status=CIStatus.SUCCESS,
+                jira_ticket="PROJ-9",
+                total_threads=3,
+                my_commented_threads=2,
+                labels=frozenset({PRLabel.DRAFT}),
+            )
+            values = table._row_values(pr)
+            assert values[0] == Text("77", style=Color.DIM)
+            assert values[1] == Text("Other's draft", style=Color.DIM)
+            assert values[2] == Text("someone", style=Color.DIM)
+            assert values[3] == "—"
+            assert values[4] == "—"
+            assert values[5] == "—"
+            assert values[6] == "—"
+            assert values[7] == "—"
+            assert values[8] == Text("PROJ-9", style=Color.DIM)
+
+    @pytest.mark.asyncio
+    async def test_row_values_non_author_draft_no_jira_dash(self):
+        """Non-author DRAFT PR without a Jira ticket shows em-dash for Jira."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, jira_ticket=None, labels=frozenset({PRLabel.DRAFT}))
+            values = table._row_values(pr)
+            assert values[8] == "—"
+
+    @pytest.mark.asyncio
+    async def test_row_values_author_draft_renders_normally(self):
+        """AUTHOR + DRAFT PRs render normally (gray styling only for non-author drafts)."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(
+                number=5,
+                author="me",
+                ci_status=CIStatus.SUCCESS,
+                labels=frozenset({PRLabel.AUTHOR, PRLabel.DRAFT}),
+            )
+            values = table._row_values(pr)
+            assert values[2] == Text("me", style=Color.BLUE)
+            assert values[5] == Text("✓", style=Color.GREEN)
+
+    @pytest.mark.asyncio
     async def test_flash_title_cycles_and_restores(self):
         """flash_title calls update_cell 7 times: 6 flash steps then plain restore."""
         async with PRTableTestApp().run_test() as pilot:
@@ -542,6 +593,18 @@ class TestPRTable:
             assert mock_update.call_args_list[1] == call("1", "Title", Text("Flash Me", style="default"))
             # Final restore is plain string
             assert mock_update.call_args_list[6] == call("1", "Title", "Flash Me")
+
+    @pytest.mark.asyncio
+    async def test_flash_title_skips_non_author_draft(self):
+        """Non-author drafts already render in gray — flashing white would flicker."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr = make_pr(number=1, title="Drafty", labels=frozenset({PRLabel.DRAFT}))
+            table.load_prs([pr])
+            with patch("github_tracker.widgets.pr_table.asyncio.sleep", new_callable=AsyncMock):
+                with patch.object(table, "update_cell") as mock_update:
+                    await table.flash_title(1)
+            mock_update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_flash_title_unknown_pr_is_noop(self):

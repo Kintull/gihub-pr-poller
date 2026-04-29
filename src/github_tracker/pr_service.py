@@ -75,17 +75,26 @@ def compute_phase2_labels(
     return existing_labels
 
 
+def _is_non_author_draft(pr: PullRequest) -> bool:
+    return PRLabel.DRAFT in pr.labels and PRLabel.AUTHOR not in pr.labels
+
+
 def group_prs(
     prs: list[PullRequest],
 ) -> tuple[list[PullRequest], list[PullRequest]]:
     """Split PRs into (my_prs, other_prs). "Mine" = has FAVOURITE label.
 
-    Within other_prs, related PRs (any non-FAVOURITE interest label) sort before
-    unrelated ones. Existing ordering is preserved within each tier.
+    Within other_prs, related PRs (any non-FAVOURITE, non-DRAFT interest label)
+    sort before unrelated ones. Non-author DRAFT PRs are pushed to the bottom of
+    each list. Existing ordering is preserved within each tier.
     """
     my_prs = [pr for pr in prs if PRLabel.FAVOURITE in pr.labels]
     other_prs = [pr for pr in prs if PRLabel.FAVOURITE not in pr.labels]
-    other_prs.sort(key=lambda pr: 0 if pr.labels - {PRLabel.FAVOURITE} else 1)
+    my_prs.sort(key=lambda pr: 1 if _is_non_author_draft(pr) else 0)
+    other_prs.sort(key=lambda pr: (
+        1 if _is_non_author_draft(pr) else 0,
+        0 if pr.labels - {PRLabel.FAVOURITE, PRLabel.DRAFT} else 1,
+    ))
     return my_prs, other_prs
 
 

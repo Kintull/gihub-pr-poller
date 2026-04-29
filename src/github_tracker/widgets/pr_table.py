@@ -120,14 +120,29 @@ class PRTable(DataTable):
     def _row_values(self, pr: PullRequest) -> tuple:
         """Build the cell values for a PR row."""
         is_author = PRLabel.AUTHOR in pr.labels
+        is_non_author_draft = PRLabel.DRAFT in pr.labels and not is_author
         author_text: str | Text = Text(pr.author, style=Color.BLUE) if is_author else pr.author
-        title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
+        title: str | Text = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
         display = self._display_items.get(pr.number)
         if display and display.is_sub_pr:
             prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "
             title = prefix + title
-        has_interest = bool(pr.labels - {PRLabel.FAVOURITE})
+        has_interest = bool(pr.labels - {PRLabel.FAVOURITE, PRLabel.DRAFT})
         number_text: str | Text = Text(str(pr.number), style=Color.YELLOW) if has_interest else str(pr.number)
+        if is_non_author_draft:
+            jira_text: str | Text = Text(pr.jira_ticket, style=Color.DIM) if pr.jira_ticket else "\u2014"
+            title_text = title if isinstance(title, Text) else Text(title, style=Color.DIM)
+            return (
+                Text(str(pr.number), style=Color.DIM),
+                title_text,
+                Text(pr.author, style=Color.DIM),
+                "\u2014",
+                "\u2014",
+                "\u2014",
+                "\u2014",
+                "\u2014",
+                jira_text,
+            )
         is_merged = pr.merged_at is not None
         if is_merged:
             comment_text = "\u2014"
@@ -198,6 +213,8 @@ class PRTable(DataTable):
         if idx is None:
             return
         pr = self._pull_requests[idx]
+        if PRLabel.DRAFT in pr.labels and PRLabel.AUTHOR not in pr.labels:
+            return
         base_title = f"\u2605 {pr.title}" if PRLabel.FAVOURITE in pr.labels else pr.title
         display = self._display_items.get(pr_number)
         if display and display.is_sub_pr:

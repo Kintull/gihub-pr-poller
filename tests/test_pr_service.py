@@ -227,6 +227,36 @@ class TestGroupPrs:
         _, other = group_prs(prs)
         assert [p.number for p in other] == [20, 40, 10, 30]
 
+    def test_non_author_drafts_pushed_to_bottom_of_others(self):
+        prs = [
+            make_pr(number=1, labels=frozenset({PRLabel.DRAFT})),
+            make_pr(number=2, labels=frozenset({PRLabel.MENTIONED})),
+            make_pr(number=3),
+            make_pr(number=4, labels=frozenset({PRLabel.REVIEW_REQUESTED, PRLabel.DRAFT})),
+        ]
+        _, other = group_prs(prs)
+        # Non-drafts come first; drafts last (regardless of their interest labels)
+        assert [p.number for p in other[:2]] == [2, 3]
+        assert sorted(p.number for p in other[2:]) == [1, 4]
+
+    def test_author_drafts_not_pushed_to_bottom(self):
+        """AUTHOR + DRAFT PRs are still treated as user-related, not drafts-of-others."""
+        prs = [
+            make_pr(number=1, labels=frozenset({PRLabel.AUTHOR, PRLabel.DRAFT})),
+            make_pr(number=2),
+        ]
+        _, other = group_prs(prs)
+        assert [p.number for p in other] == [1, 2]
+
+    def test_non_author_drafts_pushed_to_bottom_of_my_prs(self):
+        """Non-author drafts in My PRs (e.g. REVIEW_REQUESTED) sort to bottom."""
+        prs = [
+            make_pr(number=1, labels=frozenset({PRLabel.FAVOURITE, PRLabel.REVIEW_REQUESTED, PRLabel.DRAFT})),
+            make_pr(number=2, labels=frozenset({PRLabel.FAVOURITE})),
+        ]
+        my, _ = group_prs(prs)
+        assert [p.number for p in my] == [2, 1]
+
 
 class TestFindTreeMembers:
     def test_single_pr_no_tree(self):

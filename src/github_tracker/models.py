@@ -62,6 +62,7 @@ class PRLabel(Enum):
     MENTIONED = "mentioned"
     COMMENTED = "commented"
     FAVOURITE = "favourite"
+    DRAFT = "draft"
 
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
