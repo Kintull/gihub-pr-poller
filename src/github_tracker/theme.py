@@ -8,6 +8,6 @@ class Color(str, Enum):
 
     GREEN = "#339900"
     YELLOW = "#ffcc66"
-    BLUE = "#336699"
+    BLUE = "#B8D4F0"
     RED = "#cc3333"
     DIM = "#888888"
