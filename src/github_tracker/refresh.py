@@ -201,13 +201,17 @@ async def refresh_open_pr_details(
     github_client: GitHubClient,
     github_username: str,
     update_pr: Callable[[PullRequest], None],
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[PullRequest]:
     """Fetch fresh detail/reviews/CI/threads for each PR and call update_pr.
 
     Returns list of PRs discovered to be merged (so callers can move them).
     """
     newly_merged: list[PullRequest] = []
-    for pr in open_prs:
+    total = len(open_prs)
+    for idx, pr in enumerate(open_prs, start=1):
+        if on_progress is not None:
+            on_progress(idx, total)
         try:
             pr_detail = await github_client.fetch_pr_detail(pr.repo, pr.number)
 

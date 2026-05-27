@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import webbrowser
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -462,7 +463,11 @@ class GitHubTrackerApp(App):
             except Exception:
                 pass
 
-    async def _do_refresh_open_prs(self, open_prs: list[PullRequest]) -> list[PullRequest]:
+    async def _do_refresh_open_prs(
+        self,
+        open_prs: list[PullRequest],
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[PullRequest]:
         """Fetch fresh detail/reviews/CI/threads for each PR and update tables.
 
         Returns list of PRs discovered to be merged during refresh.
@@ -470,6 +475,7 @@ class GitHubTrackerApp(App):
         discovered_merged = await refresh_open_pr_details(
             open_prs, self.github_client, self.config.github_username,
             self._update_pr_in_tables,
+            on_progress=on_progress,
         )
         if discovered_merged:
             existing_keys = {(m.number, m.repo) for m in self._merged_prs}
@@ -511,13 +517,17 @@ class GitHubTrackerApp(App):
         open_prs = [pr for pr in prs if pr.merged_at is None]
         merged_prs_in_table = [pr for pr in prs if pr.merged_at is not None]
 
-        header.status_text = f"Refreshing {len(prs)} PRs..."
+        total = len(open_prs)
+        header.status_text = f"Refreshing {total} PRs... (0/{total})"
         logger.info(
             "Refreshing focused table: %d open, %d merged",
             len(open_prs), len(merged_prs_in_table),
         )
 
-        discovered_merged = await self._do_refresh_open_prs(open_prs)
+        def _set_progress(idx: int, n: int) -> None:
+            header.status_text = f"Refreshing {n} PRs... ({idx}/{n})"
+
+        discovered_merged = await self._do_refresh_open_prs(open_prs, on_progress=_set_progress)
         merged_prs_in_table = merged_prs_in_table + discovered_merged
 
         if merged_prs_in_table:
