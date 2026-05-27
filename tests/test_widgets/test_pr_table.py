@@ -330,7 +330,7 @@ class TestPRTable:
             )
             table._spinner_index = 0
             values = table._row_values(pr)
-            assert values[5] == f"{SPINNER_FRAMES[0]}(2/3)"
+            assert values[5] == f"{SPINNER_FRAMES[0]}66%"
 
     @pytest.mark.asyncio
     async def test_acc_cell_shows_argo(self):

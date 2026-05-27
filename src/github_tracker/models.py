@@ -80,8 +80,9 @@ def ci_display(status: CIStatus, spinner_index: int = 0, completed: int = 0, tot
     if status == CIStatus.RUNNING:
         frame = SPINNER_FRAMES[spinner_index % len(SPINNER_FRAMES)]
         if total > 0:
-            return f"{frame}({completed}/{total})"
-        return f"{frame}({frame}/{frame})"
+            pct = completed * 100 // total
+            return f"{frame}{pct}%"
+        return frame
     return CI_SYMBOLS[status]
 
 

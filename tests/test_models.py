@@ -89,28 +89,24 @@ class TestCIDisplay:
         assert result.style == Color.RED
 
     def test_running_spinner_index_0(self):
-        f = SPINNER_FRAMES[0]
-        assert ci_display(CIStatus.RUNNING, 0) == f"{f}({f}/{f})"
+        assert ci_display(CIStatus.RUNNING, 0) == SPINNER_FRAMES[0]
 
     def test_running_spinner_index_wraps(self):
         idx = len(SPINNER_FRAMES) + 3
-        f = SPINNER_FRAMES[3]
-        assert ci_display(CIStatus.RUNNING, idx) == f"{f}({f}/{f})"
+        assert ci_display(CIStatus.RUNNING, idx) == SPINNER_FRAMES[3]
 
     def test_running_default_index(self):
-        f = SPINNER_FRAMES[0]
-        assert ci_display(CIStatus.RUNNING) == f"{f}({f}/{f})"
+        assert ci_display(CIStatus.RUNNING) == SPINNER_FRAMES[0]
 
     def test_running_with_progress(self):
-        assert ci_display(CIStatus.RUNNING, 0, completed=2, total=3) == f"{SPINNER_FRAMES[0]}(2/3)"
+        assert ci_display(CIStatus.RUNNING, 0, completed=2, total=3) == f"{SPINNER_FRAMES[0]}66%"
 
     def test_running_with_zero_total_shows_placeholder(self):
-        f = SPINNER_FRAMES[0]
-        assert ci_display(CIStatus.RUNNING, 0, completed=0, total=0) == f"{f}({f}/{f})"
+        assert ci_display(CIStatus.RUNNING, 0, completed=0, total=0) == SPINNER_FRAMES[0]
 
     def test_running_progress_spinner_wraps(self):
         idx = len(SPINNER_FRAMES) + 1
-        assert ci_display(CIStatus.RUNNING, idx, completed=1, total=5) == f"{SPINNER_FRAMES[1]}(1/5)"
+        assert ci_display(CIStatus.RUNNING, idx, completed=1, total=5) == f"{SPINNER_FRAMES[1]}20%"
 
 
 class TestCISymbols:
