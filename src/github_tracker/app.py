@@ -22,6 +22,8 @@ from github_tracker.deploy_tracker import (
 )
 from github_tracker.github_client import GitHubClient
 from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRequest
+from github_tracker.notifications import compute_fav_events, load_notified_events, save_notified_events
+from github_tracker.notifier import notify as desktop_notify
 from github_tracker.pr_service import compute_prd_deploy_status, filter_expired_merged_prs, find_tree_members, group_prs, order_with_nesting
 from github_tracker.refresh import (
     backfill_pr_details,
@@ -113,6 +115,7 @@ class GitHubTrackerApp(App):
         Binding("k", "cursor_up", "Up", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("f", "favourite", "Favourite", show=False),
+        Binding("n", "test_notification", "Test notification", show=False),
     ]
 
     def __init__(
@@ -135,6 +138,7 @@ class GitHubTrackerApp(App):
         self._user_recent_merged: list[PullRequest] = []
         self._previous_open_prs: list[PullRequest] = []
         self._my_prs_refreshed_at: datetime | None = None
+        self._notified_events: set[str] = load_notified_events()
 
     def compose(self) -> ComposeResult:
         all_mins = self.config.refresh_interval // 60
@@ -378,6 +382,7 @@ class GitHubTrackerApp(App):
         self._update_my_prs_label()
         save_state(final_open, self._merged_prs)
         self._previous_open_prs = final_open
+        self._check_fav_notifications(self._all_tracked_prs())
 
     def _display_grouped_prs(
         self, all_prs: list[PullRequest], is_cached: bool = False, preserve_focus: bool = False
@@ -582,6 +587,46 @@ class GitHubTrackerApp(App):
 
         header.status_text = f"{len(prs)} PRs"
         logger.info("Finished refreshing focused table")
+        self._check_fav_notifications(self._all_tracked_prs())
+
+    def action_test_notification(self) -> None:
+        """Hidden binding (n): fire a sample desktop notification."""
+        desktop_notify(
+            "GitHub Tracker test",
+            "Desktop notifications are working.",
+            "https://github.com/Kintull/github-pr-poller",
+        )
+        self.notify("Test notification sent", severity="information")
+
+    def _check_fav_notifications(self, prs: list[PullRequest]) -> None:
+        """Fire desktop notifications for favourite PR state transitions."""
+        events = compute_fav_events(prs, self._notified_events)
+        if not events:
+            return
+        for e in events:
+            desktop_notify(e.title, e.message, e.url)
+            self._notified_events.add(e.event_id)
+        save_notified_events(self._notified_events)
+
+    def _all_tracked_prs(self) -> list[PullRequest]:
+        """Collect every PR currently displayed across tables + merged caches."""
+        my_table = self.query_one("#my-pr-table", PRTable)
+        other_table = self.query_one("#other-pr-table", PRTable)
+        seen: set[tuple[int, str]] = set()
+        result: list[PullRequest] = []
+        for source in (
+            list(my_table.pull_requests),
+            list(other_table.pull_requests),
+            list(self._merged_prs),
+            list(self._user_recent_merged),
+        ):
+            for pr in source:
+                key = (pr.number, pr.repo)
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append(pr)
+        return result
 
     def _sync_merged_pr(self, updated: PullRequest) -> None:
         """Update a merged PR in the _merged_prs list."""
@@ -601,6 +646,7 @@ class GitHubTrackerApp(App):
         self._my_prs_refreshed_at = datetime.now(timezone.utc)
         self._update_my_prs_label()
         logger.debug("My PRs auto-refresh complete (%d open PRs)", len(open_prs))
+        self._check_fav_notifications(self._all_tracked_prs())
 
     @staticmethod
     def _format_staleness(refreshed_at: datetime | None) -> str:

@@ -327,6 +327,7 @@ class GitHubClient:
             author=raw_pr["user"]["login"],
             updated_at=updated_at,
             repo=repo,
+            auto_merge_enabled=bool(raw_pr.get("auto_merge")),
         )
 
     async def fetch_pull_requests(

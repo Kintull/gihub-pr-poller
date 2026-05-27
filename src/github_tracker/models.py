@@ -148,6 +148,7 @@ class PullRequest:
     prd_completed_steps: int = field(default=0)
     prd_total_steps: int = field(default=0)
     merge_commit_sha: str | None = field(default=None)
+    auto_merge_enabled: bool = field(default=False)
     user_approved: bool = field(default=False)
     total_threads: int = field(default=0)
     unresolved_threads: int = field(default=0)

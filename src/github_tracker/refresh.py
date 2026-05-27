@@ -138,6 +138,7 @@ async def backfill_pr_details(
             unresolved_threads=unresolved_threads,
             my_commented_threads=my_commented,
             my_unresolved_threads=my_unresolved,
+            auto_merge_enabled=bool(pr_detail.get("auto_merge")),
         )
         update_pr(updated_pr)
         result[i] = updated_pr
@@ -272,6 +273,7 @@ async def refresh_open_pr_details(
             unresolved_threads=unresolved_threads,
             my_commented_threads=my_commented,
             my_unresolved_threads=my_unresolved,
+            auto_merge_enabled=bool(pr_detail.get("auto_merge")),
         )
         update_pr(updated_pr)
 
