@@ -247,9 +247,9 @@ class GitHubTrackerApp(App):
         )
 
         # Detect newly merged PRs
-        current_open_numbers = {pr.number for pr in all_prs}
+        current_open_keys = {(pr.number, pr.repo) for pr in all_prs}
         new_merged = await detect_newly_merged_prs(
-            self._previous_open_prs, current_open_numbers, self._merged_prs, self.github_client
+            self._previous_open_prs, current_open_keys, self._merged_prs, self.github_client
         )
         # Set PRD_DEPLOYING on newly merged PRs (skip feature-branch merges)
         new_merged = [
@@ -437,11 +437,11 @@ class GitHubTrackerApp(App):
             return other_table
         return None
 
-    def _find_pr_in_tables(self, pr_number: int) -> PullRequest | None:
-        """Find a PR by number across both tables."""
+    def _find_pr_in_tables(self, pr_number: int, repo: str) -> PullRequest | None:
+        """Find a PR by (number, repo) across both tables."""
         for table_id in ("#my-pr-table", "#other-pr-table"):
             table = self.query_one(table_id, PRTable)
-            idx = table._pr_index.get(pr_number)
+            idx = table._pr_index.get((pr_number, repo))
             if idx is not None:
                 return table.pull_requests[idx]
         return None
@@ -450,7 +450,7 @@ class GitHubTrackerApp(App):
         """Update a PR in whichever table contains it."""
         for table_id in ("#my-pr-table", "#other-pr-table"):
             table = self.query_one(table_id, PRTable)
-            if pr.number in table._pr_index:
+            if (pr.number, pr.repo) in table._pr_index:
                 table.update_pr(pr)
                 return
 
@@ -791,6 +791,6 @@ class GitHubTrackerApp(App):
         self._display_grouped_prs(final_open + self._merged_prs + self._user_recent_merged, preserve_focus=True)
         save_state(final_open, self._merged_prs)
         if removing_favourite:
-            self.run_worker(other_table.flash_title(pr.number))
+            self.run_worker(other_table.flash_title(pr.number, pr.repo))
         else:
-            self.run_worker(my_table.flash_title(pr.number))
+            self.run_worker(my_table.flash_title(pr.number, pr.repo))

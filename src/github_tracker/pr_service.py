@@ -13,6 +13,11 @@ from github_tracker.models import DeployStatus, PRLabel, PrdDeployStatus, PullRe
 _DEPLOY_BRANCHES = {"main", "master", "edge", "acceptance", "staging", "test"}
 
 
+def pr_key(pr: PullRequest) -> tuple[int, str]:
+    """Unique key for a PR: number alone collides across repos."""
+    return (pr.number, pr.repo)
+
+
 @dataclass
 class PRDisplayItem:
     """Display metadata for a PR row in the table."""
@@ -100,13 +105,19 @@ def group_prs(
 
 def _build_tree_index(
     prs: list[PullRequest],
-) -> tuple[dict[int, PullRequest], dict[int, list[PullRequest]], set[int]]:
+) -> tuple[
+    dict[tuple[int, str], PullRequest],
+    dict[tuple[int, str], list[PullRequest]],
+    set[tuple[int, str]],
+]:
     """Build parent-child tree index from a list of PRs.
 
-    Returns (parent_of, children_of, child_numbers) where:
-    - parent_of maps PR number -> its direct parent PR
-    - children_of maps root PR number -> list of all transitive children
-    - child_numbers is the set of PR numbers that are children
+    Returns (parent_of, children_of, child_keys) where:
+    - parent_of maps PR key -> its direct parent PR
+    - children_of maps root PR key -> list of all transitive children
+    - child_keys is the set of PR keys that are children
+
+    PR keys are (number, repo) tuples.
     """
     # Map (repo, branch_name) -> PR for finding parents
     branch_to_pr: dict[tuple[str, str], PullRequest] = {}
@@ -115,33 +126,33 @@ def _build_tree_index(
         branch_to_pr[key] = pr
 
     # Find each PR's direct parent
-    parent_of: dict[int, PullRequest] = {}
+    parent_of: dict[tuple[int, str], PullRequest] = {}
     for pr in prs:
         if pr.base_branch and pr.base_branch not in _DEPLOY_BRANCHES:
             parent = branch_to_pr.get((pr.repo, pr.base_branch))
-            if parent is not None and parent.number != pr.number:
-                parent_of[pr.number] = parent
+            if parent is not None and pr_key(parent) != pr_key(pr):
+                parent_of[pr_key(pr)] = parent
 
     # Walk chains to find root ancestor
     def find_root(pr: PullRequest) -> PullRequest:
-        visited: set[int] = set()
+        visited: set[tuple[int, str]] = set()
         current = pr
-        while current.number in parent_of and current.number not in visited:
-            visited.add(current.number)
-            current = parent_of[current.number]
+        while pr_key(current) in parent_of and pr_key(current) not in visited:
+            visited.add(pr_key(current))
+            current = parent_of[pr_key(current)]
         return current
 
     # Group children under root ancestors
-    children_of: dict[int, list[PullRequest]] = {}
-    child_numbers: set[int] = set()
+    children_of: dict[tuple[int, str], list[PullRequest]] = {}
+    child_keys: set[tuple[int, str]] = set()
     for pr in prs:
-        if pr.number in parent_of:
+        if pr_key(pr) in parent_of:
             root = find_root(pr)
-            if root.number != pr.number:
-                children_of.setdefault(root.number, []).append(pr)
-                child_numbers.add(pr.number)
+            if pr_key(root) != pr_key(pr):
+                children_of.setdefault(pr_key(root), []).append(pr)
+                child_keys.add(pr_key(pr))
 
-    return parent_of, children_of, child_numbers
+    return parent_of, children_of, child_keys
 
 
 def find_tree_members(
@@ -153,53 +164,53 @@ def find_tree_members(
     A tree = root PR (targeting a deploy branch) + all transitive children.
     Returns list including target. If target has no tree relations, returns [target].
     """
-    parent_of, children_of, child_numbers = _build_tree_index(all_prs)
+    parent_of, children_of, child_keys = _build_tree_index(all_prs)
 
     # Find root of target's tree
-    visited: set[int] = set()
+    visited: set[tuple[int, str]] = set()
     current = target
-    while current.number in parent_of and current.number not in visited:
-        visited.add(current.number)
-        current = parent_of[current.number]
+    while pr_key(current) in parent_of and pr_key(current) not in visited:
+        visited.add(pr_key(current))
+        current = parent_of[pr_key(current)]
     root = current
 
     # Collect root + all children
-    children = children_of.get(root.number, [])
-    if not children and root.number not in child_numbers:
+    children = children_of.get(pr_key(root), [])
+    if not children and pr_key(root) not in child_keys:
         # target is standalone (or root with no children)
-        if root.number == target.number:
+        if pr_key(root) == pr_key(target):
             return [target]
     return [root] + children
 
 
 def order_with_nesting(
     prs: list[PullRequest],
-) -> tuple[list[PullRequest], dict[int, PRDisplayItem]]:
+) -> tuple[list[PullRequest], dict[tuple[int, str], PRDisplayItem]]:
     """Reorder PRs so sub-PRs follow their parent feature branch PR.
 
     A sub-PR is one whose base_branch matches another open PR's branch_name
     within the same repo, and whose base_branch is not a deploy branch.
 
-    Returns (ordered_prs, display_items) where display_items maps PR number
-    to its display metadata.
+    Returns (ordered_prs, display_items) where display_items maps PR key
+    (number, repo) to its display metadata.
     """
-    _parent_of, children_of, child_numbers = _build_tree_index(prs)
+    _parent_of, children_of, child_keys = _build_tree_index(prs)
 
     # Build ordered output
     ordered: list[PullRequest] = []
-    display_items: dict[int, PRDisplayItem] = {}
+    display_items: dict[tuple[int, str], PRDisplayItem] = {}
 
     for pr in prs:
-        if pr.number in child_numbers:
+        if pr_key(pr) in child_keys:
             continue
         ordered.append(pr)
-        display_items[pr.number] = PRDisplayItem(pr=pr, is_sub_pr=False, is_last_sub_pr=False)
+        display_items[pr_key(pr)] = PRDisplayItem(pr=pr, is_sub_pr=False, is_last_sub_pr=False)
 
-        children = children_of.get(pr.number, [])
+        children = children_of.get(pr_key(pr), [])
         for i, child in enumerate(children):
             is_last = i == len(children) - 1
             ordered.append(child)
-            display_items[child.number] = PRDisplayItem(
+            display_items[pr_key(child)] = PRDisplayItem(
                 pr=child, is_sub_pr=True, is_last_sub_pr=is_last
             )
 

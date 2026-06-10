@@ -75,7 +75,7 @@ async def backfill_pr_details(
     github_client: GitHubClient,
     github_username: str,
     new_pr_keys: set[tuple[int, str]],
-    find_pr: Callable[[int], PullRequest | None],
+    find_pr: Callable[[int, str], PullRequest | None],
     update_pr: Callable[[PullRequest], None],
 ) -> list[PullRequest]:
     """Phase 2: Backfill reviews + CI status for each open PR.
@@ -118,7 +118,7 @@ async def backfill_pr_details(
             threads, github_username
         )
 
-        pr = find_pr(pr_number)
+        pr = find_pr(pr_number, repo)
         if pr is None:
             continue
 

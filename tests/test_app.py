@@ -947,11 +947,11 @@ class TestCIProgressPropagation:
 
 
 class TestUserApprovedPropagation:
-    def _find_pr_in_tables(self, app, pr_number: int):
-        """Find a PR by number across both tables."""
+    def _find_pr_in_tables(self, app, pr_number: int, repo: str = "owner/repo"):
+        """Find a PR by (number, repo) across both tables."""
         for table_id in ("#my-pr-table", "#other-pr-table"):
             table = app.query_one(table_id, PRTable)
-            idx = table._pr_index.get(pr_number)
+            idx = table._pr_index.get((pr_number, repo))
             if idx is not None:
                 return table.pull_requests[idx]
         return None
@@ -1178,7 +1178,7 @@ class TestFavourite:
                 await pilot.pause()
                 await pilot.app.workers.wait_for_complete()
                 await pilot.pause()
-            mock_flash.assert_called_once_with(1)
+            mock_flash.assert_called_once_with(1, "owner/repo")
 
     @pytest.mark.asyncio
     async def test_unfavourite_triggers_flash_in_others(self):
@@ -1203,7 +1203,7 @@ class TestFavourite:
                 await pilot.pause()
                 await pilot.app.workers.wait_for_complete()
                 await pilot.pause()
-            mock_flash.assert_called_once_with(1)
+            mock_flash.assert_called_once_with(1, "owner/repo")
 
     @pytest.mark.asyncio
     async def test_unfavourite_merged_pr_moves_to_others(self):

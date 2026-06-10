@@ -666,6 +666,8 @@ class TestComputeThreadCounts:
 
 
 class TestOrderWithNesting:
+    R = "owner/repo"  # default repo from make_pr
+
     def test_no_sub_prs_all_target_main(self):
         prs = [
             make_pr(number=1, branch_name="feat-a", base_branch="main"),
@@ -673,8 +675,8 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [1, 2]
-        assert not display[1].is_sub_pr
-        assert not display[2].is_sub_pr
+        assert not display[(1, self.R)].is_sub_pr
+        assert not display[(2, self.R)].is_sub_pr
 
     def test_one_sub_pr(self):
         prs = [
@@ -683,9 +685,9 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [10, 11]
-        assert not display[10].is_sub_pr
-        assert display[11].is_sub_pr
-        assert display[11].is_last_sub_pr
+        assert not display[(10, self.R)].is_sub_pr
+        assert display[(11, self.R)].is_sub_pr
+        assert display[(11, self.R)].is_last_sub_pr
 
     def test_multiple_sub_prs(self):
         prs = [
@@ -695,11 +697,11 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [1, 2, 3]
-        assert not display[1].is_sub_pr
-        assert display[2].is_sub_pr
-        assert not display[2].is_last_sub_pr
-        assert display[3].is_sub_pr
-        assert display[3].is_last_sub_pr
+        assert not display[(1, self.R)].is_sub_pr
+        assert display[(2, self.R)].is_sub_pr
+        assert not display[(2, self.R)].is_last_sub_pr
+        assert display[(3, self.R)].is_sub_pr
+        assert display[(3, self.R)].is_last_sub_pr
 
     def test_chain_flattened(self):
         """C -> B -> A -> main flattens all under A."""
@@ -710,10 +712,10 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [1, 2, 3]
-        assert not display[1].is_sub_pr
-        assert display[2].is_sub_pr
-        assert display[3].is_sub_pr
-        assert display[3].is_last_sub_pr
+        assert not display[(1, self.R)].is_sub_pr
+        assert display[(2, self.R)].is_sub_pr
+        assert display[(3, self.R)].is_sub_pr
+        assert display[(3, self.R)].is_last_sub_pr
 
     def test_orphan_sub_pr_treated_as_regular(self):
         """Sub-PR whose parent is not in the list stays as regular PR."""
@@ -723,8 +725,8 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [1, 2]
-        assert not display[1].is_sub_pr
-        assert not display[2].is_sub_pr
+        assert not display[(1, self.R)].is_sub_pr
+        assert not display[(2, self.R)].is_sub_pr
 
     def test_cross_repo_not_grouped(self):
         """Same branch name in different repos should not group."""
@@ -734,8 +736,8 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [1, 2]
-        assert not display[1].is_sub_pr
-        assert not display[2].is_sub_pr
+        assert not display[(1, "org/repo-a")].is_sub_pr
+        assert not display[(2, "org/repo-b")].is_sub_pr
 
     def test_deploy_branch_not_treated_as_parent(self):
         """PR targeting 'master' should not be grouped under a PR whose branch is 'master'."""
@@ -744,8 +746,8 @@ class TestOrderWithNesting:
             make_pr(number=2, branch_name="feat-b", base_branch="master"),
         ]
         ordered, display = order_with_nesting(prs)
-        assert not display[1].is_sub_pr
-        assert not display[2].is_sub_pr
+        assert not display[(1, self.R)].is_sub_pr
+        assert not display[(2, self.R)].is_sub_pr
 
     def test_empty_list(self):
         ordered, display = order_with_nesting([])
@@ -760,7 +762,7 @@ class TestOrderWithNesting:
         ]
         ordered, display = order_with_nesting(prs)
         assert [p.number for p in ordered] == [1, 3, 2]
-        assert not display[1].is_sub_pr
-        assert display[3].is_sub_pr
-        assert display[3].is_last_sub_pr
-        assert not display[2].is_sub_pr
+        assert not display[(1, self.R)].is_sub_pr
+        assert display[(3, self.R)].is_sub_pr
+        assert display[(3, self.R)].is_last_sub_pr
+        assert not display[(2, self.R)].is_sub_pr

@@ -322,7 +322,7 @@ class TestEdgeCases:
             await pilot.pause()
             await pilot.app.workers.wait_for_complete()
             await pilot.pause()
-            assert pilot.app._find_pr_in_tables(9999) is None
+            assert pilot.app._find_pr_in_tables(9999, "owner/repo") is None
 
     @pytest.mark.asyncio
     async def test_phase2_skips_pr_not_in_tables(self):
@@ -336,11 +336,11 @@ class TestEdgeCases:
 
         call_count = [0]
 
-        def _find_none_then_real(self, pr_number):
+        def _find_none_then_real(self, pr_number, repo):
             call_count[0] += 1
             if call_count[0] == 1:
                 return None  # First PR not found
-            return original_find(self, pr_number)
+            return original_find(self, pr_number, repo)
 
         with patch.object(GitHubTrackerApp, "_find_pr_in_tables", _find_none_then_real):
             app = GitHubTrackerApp(config=make_config(), github_client=client)

@@ -54,7 +54,22 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             prs = [make_pr(number=10), make_pr(number=20)]
             table.load_prs(prs)
-            assert table._pr_index == {10: 0, 20: 1}
+            assert table._pr_index == {(10, "owner/repo"): 0, (20, "owner/repo"): 1}
+
+    @pytest.mark.asyncio
+    async def test_same_pr_number_across_repos(self):
+        """PRs with the same number in different repos get distinct rows and updates."""
+        async with PRTableTestApp().run_test() as pilot:
+            table = pilot.app.query_one("#pr-table", PRTable)
+            pr_a = make_pr(number=1, repo="org/repo-a", title="A")
+            pr_b = make_pr(number=1, repo="org/repo-b", title="B")
+            table.load_prs([pr_a, pr_b])
+            assert table.row_count == 2
+            assert table._pr_index == {(1, "org/repo-a"): 0, (1, "org/repo-b"): 1}
+            updated_b = make_pr(number=1, repo="org/repo-b", title="B2")
+            table.update_pr(updated_b)
+            assert table.pull_requests[0].title == "A"
+            assert table.pull_requests[1].title == "B2"
 
     @pytest.mark.asyncio
     async def test_load_empty_prs(self):
@@ -586,13 +601,13 @@ class TestPRTable:
             table.load_prs([pr])
             with patch("github_tracker.widgets.pr_table.asyncio.sleep", new_callable=AsyncMock):
                 with patch.object(table, "update_cell") as mock_update:
-                    await table.flash_title(1)
+                    await table.flash_title(1, "owner/repo")
             assert mock_update.call_count == 7
             # Odd steps are grey, even steps are default
-            assert mock_update.call_args_list[0] == call("1", "Title", Text("Flash Me", style=Color.DIM))
-            assert mock_update.call_args_list[1] == call("1", "Title", Text("Flash Me", style="default"))
+            assert mock_update.call_args_list[0] == call("owner/repo#1", "Title", Text("Flash Me", style=Color.DIM))
+            assert mock_update.call_args_list[1] == call("owner/repo#1", "Title", Text("Flash Me", style="default"))
             # Final restore is plain string
-            assert mock_update.call_args_list[6] == call("1", "Title", "Flash Me")
+            assert mock_update.call_args_list[6] == call("owner/repo#1", "Title", "Flash Me")
 
     @pytest.mark.asyncio
     async def test_flash_title_skips_non_author_draft(self):
@@ -603,7 +618,7 @@ class TestPRTable:
             table.load_prs([pr])
             with patch("github_tracker.widgets.pr_table.asyncio.sleep", new_callable=AsyncMock):
                 with patch.object(table, "update_cell") as mock_update:
-                    await table.flash_title(1)
+                    await table.flash_title(1, "owner/repo")
             mock_update.assert_not_called()
 
     @pytest.mark.asyncio
@@ -613,7 +628,7 @@ class TestPRTable:
             table = pilot.app.query_one("#pr-table", PRTable)
             table.load_prs([make_pr(number=1)])
             with patch.object(table, "update_cell") as mock_update:
-                await table.flash_title(9999)
+                await table.flash_title(9999, "owner/repo")
             mock_update.assert_not_called()
 
     @pytest.mark.asyncio
@@ -633,7 +648,7 @@ class TestPRTable:
 
             with patch("github_tracker.widgets.pr_table.asyncio.sleep", side_effect=_sleep_and_remove):
                 with patch.object(table, "update_cell") as mock_update:
-                    await table.flash_title(1)
+                    await table.flash_title(1, "owner/repo")
             # Only the first flash step fired before the abort
             assert mock_update.call_count == 1
 
@@ -654,7 +669,7 @@ class TestPRTable:
 
             with patch("github_tracker.widgets.pr_table.asyncio.sleep", side_effect=_sleep_and_remove):
                 with patch.object(table, "update_cell") as mock_update:
-                    await table.flash_title(1)
+                    await table.flash_title(1, "owner/repo")
             # All 6 flash steps fired, but the final restore was skipped
             assert mock_update.call_count == 6
 

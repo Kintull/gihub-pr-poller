@@ -10,7 +10,7 @@ from rich.text import Text
 from textual.widgets import DataTable
 
 from github_tracker.models import CIStatus, DeployStatus, PRLabel, PrdDeployStatus, PullRequest, acc_deploy_display, ci_display, prd_deploy_display
-from github_tracker.pr_service import PRDisplayItem
+from github_tracker.pr_service import PRDisplayItem, pr_key
 from github_tracker.theme import Color
 
 COLUMNS = ("#", "Title", "Author", "\U0001f4ac", "✓", "CI", "ACC", "PRD", "Jira")
@@ -27,6 +27,11 @@ _FIXED_WIDTHS: dict[str, int] = {
 _MIN_TITLE_WIDTH = 15
 
 
+def _row_key(pr: PullRequest) -> str:
+    """DataTable row key — repo-qualified so PR numbers can repeat across repos."""
+    return f"{pr.repo}#{pr.number}"
+
+
 class PRTable(DataTable):
     """DataTable displaying pull requests."""
 
@@ -39,9 +44,9 @@ class PRTable(DataTable):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._pull_requests: list[PullRequest] = []
-        self._pr_index: dict[int, int] = {}
+        self._pr_index: dict[tuple[int, str], int] = {}
         self._spinner_index: int = 0
-        self._display_items: dict[int, PRDisplayItem] = {}
+        self._display_items: dict[tuple[int, str], PRDisplayItem] = {}
 
     def on_mount(self) -> None:
         for col in COLUMNS:
@@ -90,17 +95,17 @@ class PRTable(DataTable):
     def load_prs(
         self,
         prs: list[PullRequest],
-        display_items: dict[int, PRDisplayItem] | None = None,
+        display_items: dict[tuple[int, str], PRDisplayItem] | None = None,
     ) -> None:
         """Load pull requests into the table."""
         self._pull_requests = prs
-        self._pr_index = {pr.number: i for i, pr in enumerate(prs)}
+        self._pr_index = {pr_key(pr): i for i, pr in enumerate(prs)}
         self._display_items = display_items or {}
         self._refresh_rows()
 
     def update_pr(self, pr: PullRequest) -> None:
         """Update a single PR in the table in-place."""
-        idx = self._pr_index.get(pr.number)
+        idx = self._pr_index.get(pr_key(pr))
         if idx is None:
             return
         self._pull_requests[idx] = pr
@@ -111,11 +116,11 @@ class PRTable(DataTable):
         self._spinner_index += 1
         for pr in self._pull_requests:
             if pr.ci_status == CIStatus.RUNNING:
-                self.update_cell(str(pr.number), "CI", ci_display(pr.ci_status, self._spinner_index, pr.ci_completed_steps, pr.ci_total_steps))
+                self.update_cell(_row_key(pr), "CI", ci_display(pr.ci_status, self._spinner_index, pr.ci_completed_steps, pr.ci_total_steps))
             if pr.acc_deploy in (DeployStatus.ACC_DEPLOYING, DeployStatus.ACC_ARGO):
-                self.update_cell(str(pr.number), "ACC", acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps))
+                self.update_cell(_row_key(pr), "ACC", acc_deploy_display(pr.acc_deploy, self._spinner_index, pr.acc_completed_steps, pr.acc_total_steps))
             if pr.prd_deploy in (PrdDeployStatus.PRD_DEPLOYING, PrdDeployStatus.PRD_ARGO):
-                self.update_cell(str(pr.number), "PRD", prd_deploy_display(pr.prd_deploy, self._spinner_index, pr.prd_completed_steps, pr.prd_total_steps))
+                self.update_cell(_row_key(pr), "PRD", prd_deploy_display(pr.prd_deploy, self._spinner_index, pr.prd_completed_steps, pr.prd_total_steps))
 
     def _row_values(self, pr: PullRequest) -> tuple:
         """Build the cell values for a PR row."""
@@ -123,7 +128,7 @@ class PRTable(DataTable):
         is_non_author_draft = PRLabel.DRAFT in pr.labels and not is_author
         author_text: str | Text = Text(pr.author, style=Color.BLUE) if is_author else pr.author
         title: str | Text = pr.title
-        display = self._display_items.get(pr.number)
+        display = self._display_items.get(pr_key(pr))
         if display and display.is_sub_pr:
             prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "
             title = prefix + title
@@ -186,8 +191,8 @@ class PRTable(DataTable):
         )
 
     def _update_row(self, pr: PullRequest) -> None:
-        """Update a single row's cells by PR number key."""
-        row_key = str(pr.number)
+        """Update a single row's cells by row key."""
+        row_key = _row_key(pr)
         values = self._row_values(pr)
         col_keys = list(COLUMNS)
         for col_key, value in zip(col_keys, values):
@@ -199,35 +204,36 @@ class PRTable(DataTable):
         self.clear()
         for pr in self._pull_requests:
             values = self._row_values(pr)
-            self.add_row(*values, key=str(pr.number))
+            self.add_row(*values, key=_row_key(pr))
         if self._pull_requests:
             self.move_cursor(row=min(saved_row, len(self._pull_requests) - 1))
 
-    async def flash_title(self, pr_number: int) -> None:
+    async def flash_title(self, pr_number: int, repo: str) -> None:
         """Flash the title cell of a PR 3× (grey ↔ white) over ~1 second.
 
         Aborts silently if the PR is removed from this table during the animation
         (e.g. because the user pressed f again before the flash finished).
         """
-        idx = self._pr_index.get(pr_number)
+        key = (pr_number, repo)
+        idx = self._pr_index.get(key)
         if idx is None:
             return
         pr = self._pull_requests[idx]
         if PRLabel.DRAFT in pr.labels and PRLabel.AUTHOR not in pr.labels:
             return
         base_title = pr.title
-        display = self._display_items.get(pr_number)
+        display = self._display_items.get(key)
         if display and display.is_sub_pr:
             prefix = "  \u2514\u2500 " if display.is_last_sub_pr else "  \u251c\u2500 "
             base_title = prefix + base_title
-        row_key = str(pr_number)
+        row_key = _row_key(pr)
         for i in range(6):
-            if pr_number not in self._pr_index:
+            if key not in self._pr_index:
                 return
             color = Color.DIM if i % 2 == 0 else "default"
             self.update_cell(row_key, "Title", Text(base_title, style=color))
             await asyncio.sleep(1 / 6)
-        if pr_number not in self._pr_index:
+        if key not in self._pr_index:
             return
         self.update_cell(row_key, "Title", base_title)
 

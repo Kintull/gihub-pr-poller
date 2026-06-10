@@ -17,7 +17,7 @@ DEPLOY_BRANCHES = {"main", "master", "edge", "acceptance", "staging", "test"}
 
 async def detect_newly_merged_prs(
     previous_open_prs: list[PullRequest],
-    current_open_numbers: set[int],
+    current_open_keys: set[tuple[int, str]],
     existing_merged: list[PullRequest],
     github_client: GitHubClient,
 ) -> list[PullRequest]:
@@ -25,7 +25,7 @@ async def detect_newly_merged_prs(
     existing_keys = {(m.number, m.repo) for m in existing_merged}
     new_merged: list[PullRequest] = []
     for prev_pr in previous_open_prs:
-        if prev_pr.number not in current_open_numbers:
+        if (prev_pr.number, prev_pr.repo) not in current_open_keys:
             try:
                 detail = await github_client.fetch_pr_detail(prev_pr.repo, prev_pr.number)
                 merged_at_str = detail.get("merged_at")

@@ -58,7 +58,7 @@ class TestDetectNewlyMergedPrs:
     async def test_skips_still_open(self):
         prev = [make_pr(number=1, repo="o/r")]
         client = _make_client()
-        result = await detect_newly_merged_prs(prev, {1}, [], client)
+        result = await detect_newly_merged_prs(prev, {(1, "o/r")}, [], client)
         assert len(result) == 0
         client.fetch_pr_detail.assert_not_called()
 
